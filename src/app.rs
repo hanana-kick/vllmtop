@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Row, Sparkline, Table, TableState, Wrap},
+    widgets::{Block, BorderType, Borders, Paragraph, Row, Table, TableState, Wrap},
     Frame,
 };
 use tokio::sync::mpsc;
@@ -301,12 +301,11 @@ impl App {
 
     fn draw_dashboard(&self, f: &mut Frame) {
         let area = f.area();
-        // btop-like compact: header 3, then 4 rows with tight heights, footer 1
         let main_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
-                Constraint::Min(12),
+                Constraint::Min(10),
                 Constraint::Length(1),
             ])
             .split(area);
@@ -323,15 +322,16 @@ impl App {
         let header_title = format!(" vllmtop ─ {} ", container_name);
         let header = Paragraph::new(header_line).block(block_default(&header_title));
         f.render_widget(header, main_chunks[0]);
+
         let mid = main_chunks[1];
-        // Compact heights matching spec: Throughput/KV 6, Prefix/Requests 5, Spec 5, PLE 5
+        // Numbers-only layout: compact, no graphs
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(6),
-                Constraint::Length(5),
-                Constraint::Length(5),
-                Constraint::Length(5),
+                Constraint::Length(4),
+                Constraint::Length(4),
+                Constraint::Length(3),
+                Constraint::Length(3),
             ])
             .split(mid);
 
@@ -366,37 +366,22 @@ impl App {
         let block = block_default(" Throughput ");
         let inner = block.inner(area);
         f.render_widget(block, area);
-        if inner.height < 4 || inner.width < 10 { return; }
-        // Exactly 4 lines: Gen value, Gen spark, Prompt value, Prompt spark
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ])
-            .split(inner);
-        let gen_val = format!("{:>6.2} tok/s", self.state.current.generation_throughput);
+        if inner.height < 2 || inner.width < 10 { return; }
+        // Numbers only: two lines, no sparkline
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::raw("Generation "),
-                Span::styled(gen_val, Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{:>6.2} tok/s", self.state.current.generation_throughput), Style::default().add_modifier(Modifier::BOLD)),
             ])),
-            chunks[0],
+            Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 },
         );
-        let data = crate::state::History::sparkline_data(&self.state.history.gen_tps);
-        f.render_widget(Sparkline::default().data(&data), chunks[1]);
-        let prompt_val = format!("{:>6.2} tok/s", self.state.current.prompt_throughput);
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::raw("Prompt     "),
-                Span::styled(prompt_val, Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{:>6.2} tok/s", self.state.current.prompt_throughput), Style::default().add_modifier(Modifier::BOLD)),
             ])),
-            chunks[2],
+            Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 },
         );
-        let pdata = crate::state::History::sparkline_data(&self.state.history.prompt_tps);
-        f.render_widget(Sparkline::default().data(&pdata), chunks[3]);
     }
 
     fn draw_kv(&self, f: &mut Frame, area: Rect) {
@@ -404,21 +389,14 @@ impl App {
         let block = block_default(" KV Cache ");
         let inner = block.inner(area);
         f.render_widget(block, area);
-        if inner.height < 2 || inner.width < 10 { return; }
-        // Top line: percentage
-        let top = Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 };
-        f.render_widget(Paragraph::new(format!("{:.1}%", pct)), top);
-        // Second line: bar
-        let bar_area = Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 };
-        let bar_width = bar_area.width as usize;
-        let filled = ((pct / 100.0) * bar_width as f32).round() as usize;
-        let bar = format!("{}{}", "█".repeat(filled), "░".repeat(bar_width.saturating_sub(filled)));
-        f.render_widget(Paragraph::new(bar), bar_area);
-        // If height allows, show history sparkline on third line
-        if inner.height >= 3 {
-            let spark_area = Rect { x: inner.x, y: inner.y + 2, width: inner.width, height: 1 };
-            let data = crate::state::History::sparkline_data(&self.state.history.kv_cache);
-            f.render_widget(Sparkline::default().data(&data), spark_area);
+        if inner.height < 1 || inner.width < 10 { return; }
+        // Numbers only: show percentage and used/total if available, no bar
+        let label = format!("{:.1}%", pct);
+        f.render_widget(Paragraph::new(label), Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 });
+        if inner.height >= 2 {
+            // Second line: show raw value for context
+            let detail = format!("GPU KV cache usage");
+            f.render_widget(Paragraph::new(detail), Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 });
         }
     }
 
@@ -427,41 +405,29 @@ impl App {
         let block = block_default(" Prefix Cache ");
         let inner = block.inner(area);
         f.render_widget(block, area);
-        if inner.height < 2 || inner.width < 10 { return; }
-        let label = format!("Hit rate {:>5.1}%", hit);
+        if inner.height < 1 || inner.width < 10 { return; }
+        let label = if self.state.current.prefix_hit_rate.is_some() {
+            format!("Hit rate {:.1}%", hit)
+        } else {
+            "Hit rate --".to_string()
+        };
         f.render_widget(Paragraph::new(label), Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 });
-        let bar_area = Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 };
-        let bar_width = bar_area.width as usize;
-        let filled = ((hit / 100.0) * bar_width as f32).round() as usize;
-        let bar = format!("{}{}", "█".repeat(filled), "░".repeat(bar_width.saturating_sub(filled)));
-        f.render_widget(Paragraph::new(bar), bar_area);
-        if inner.height >= 3 {
-            let spark_area = Rect { x: inner.x, y: inner.y + 2, width: inner.width, height: 1 };
-            let data = crate::state::History::sparkline_data(&self.state.history.prefix_hit);
-            f.render_widget(Sparkline::default().data(&data), spark_area);
-        }
     }
 
     fn draw_requests(&self, f: &mut Frame, area: Rect) {
         let block = block_default(" Requests ");
         let inner = block.inner(area);
         f.render_widget(block, area);
-        if inner.height < 2 || inner.width < 10 { return; }
-        // Two lines, top-aligned, no extra centering
+        if inner.height < 2 { return; }
         f.render_widget(Paragraph::new(format!("Running {:>4}", self.state.current.running)), Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 });
         f.render_widget(Paragraph::new(format!("Waiting {:>4}", self.state.current.waiting)), Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 });
-        // If extra height, show uptime or placeholder spark?
-        if inner.height >= 3 {
-            let extra = Rect { x: inner.x, y: inner.y + 2, width: inner.width, height: 1 };
-            f.render_widget(Paragraph::new(format!("uptime {}", self.state.uptime_str())), extra);
-        }
     }
 
     fn draw_spec(&self, f: &mut Frame, area: Rect) {
         let block = block_default(" Speculative Decoding ");
         let inner = block.inner(area);
         f.render_widget(block, area);
-        if inner.height < 2 || inner.width < 20 { return; }
+        if inner.height < 1 || inner.width < 20 { return; }
         let cur = &self.state.current;
         let acceptance = cur.spec_acceptance.map(|v| format!("{:.1}%", v)).unwrap_or("--".to_string());
         let mean = cur.spec_mean_accepted.map(|v| format!("{:.2}", v)).unwrap_or("--".to_string());
@@ -474,22 +440,13 @@ impl App {
             Span::raw(" │ Draft "), Span::styled(draft, Style::default().add_modifier(Modifier::BOLD)),
         ]);
         f.render_widget(Paragraph::new(line1).wrap(Wrap { trim: false }), Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 });
-        if inner.height >= 2 {
-            let spark_area = Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 };
-            let data = crate::state::History::sparkline_data(&self.state.history.spec_acceptance);
-            f.render_widget(Sparkline::default().data(&data), spark_area);
-        }
-        // Use remaining height for second sparkline or blank
-        if inner.height >= 3 {
-            // Could show draft vs accepted comparative, but keep empty to avoid clutter
-        }
     }
 
     fn draw_ple(&self, f: &mut Frame, area: Rect) {
         let block = block_default(" PLE mmap ");
         let inner = block.inner(area);
         f.render_widget(block, area);
-        if inner.height < 2 || inner.width < 20 { return; }
+        if inner.height < 1 || inner.width < 20 { return; }
         let cur = &self.state.current;
         let ms = cur.ple_ms_per_op.map(|v| format!("{:.2} ms/op", v)).unwrap_or("--".to_string());
         let gather = cur.ple_gather_ms.map(|v| format!("gather {:.2} ms/op", v)).unwrap_or("".to_string());
@@ -506,11 +463,6 @@ impl App {
         parts.push(Span::styled(mib, Style::default()));
         let line1 = Line::from(parts);
         f.render_widget(Paragraph::new(line1).wrap(Wrap { trim: false }), Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 });
-        if inner.height >= 2 {
-            let spark_area = Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 };
-            let data = crate::state::History::sparkline_data(&self.state.history.ple_ms);
-            f.render_widget(Sparkline::default().data(&data), spark_area);
-        }
     }
 
     fn draw_logs(&self, f: &mut Frame) {
@@ -583,27 +535,22 @@ mod render_tests {
 
     fn make_app() -> App {
         let mut app = App::new("/var/run/docker.sock".to_string(), 100);
-        app.state.current.running = 3;
+        app.state.current.running = 4;
         app.state.current.waiting = 0;
-        app.state.current.generation_throughput = 39.2;
+        app.state.current.generation_throughput = 49.70;
         app.state.current.prompt_throughput = 0.0;
-        app.state.current.gpu_kv_cache = 52.2;
-        app.state.current.prefix_hit_rate = Some(92.5);
-        app.state.current.spec_acceptance = Some(53.7);
-        app.state.current.spec_mean_accepted = Some(2.07);
-        app.state.current.spec_accepted_tps = Some(20.3);
-        app.state.current.spec_draft_tps = Some(37.8);
-        app.state.current.ple_ms_per_op = Some(50.93);
-        app.state.current.ple_gather_ms = Some(48.28);
-        app.state.current.ple_rows = Some(79303);
-        app.state.current.ple_mib = Some(12.1);
-        for i in 0..30 {
-            app.state.history.gen_tps.push_back(20.0 + (i as f64 % 5.0));
-            app.state.history.spec_acceptance.push_back(50.0 + (i as f64 % 10.0));
-            app.state.history.ple_ms.push_back(45.0 + (i as f64 % 5.0));
-        }
+        app.state.current.gpu_kv_cache = 55.0;
+        app.state.current.prefix_hit_rate = Some(91.8);
+        app.state.current.spec_acceptance = Some(67.2);
+        app.state.current.spec_mean_accepted = Some(2.34);
+        app.state.current.spec_accepted_tps = Some(28.49);
+        app.state.current.spec_draft_tps = Some(42.38);
+        app.state.current.ple_ms_per_op = Some(243.93);
+        app.state.current.ple_gather_ms = Some(233.98);
+        app.state.current.ple_rows = Some(339238);
+        app.state.current.ple_mib = Some(51.8);
         app.current_container = Some(ContainerInfo {
-            id: "abc123".to_string(),
+            id: "abc".to_string(),
             name: "qwen38-flash".to_string(),
             image: "test".to_string(),
             status: "Up 21 hours".to_string(),
@@ -625,15 +572,20 @@ mod render_tests {
         let content: String = terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect();
         assert!(content.contains("RUNNING"), "should contain RUNNING");
         assert!(content.contains("qwen38-flash"), "should contain container name");
-        assert!(content.contains("52.2%"), "kv cache label");
+        assert!(content.contains("55.0%"), "kv cache label");
+        // No sparkline block characters should dominate
+        assert!(!content.contains("▇▇▇▇"), "should not contain sparkline artifacts");
     }
 
     #[test]
     fn test_render_dashboard_large() {
         let mut app = make_app();
-        let backend = TestBackend::new(160, 48);
+        let backend = TestBackend::new(160, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| app.draw(f)).unwrap();
+        let content: String = terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("Generation"));
+        assert!(content.contains("55.0%"));
     }
 
     #[test]

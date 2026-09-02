@@ -1,0 +1,39 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Keep Cargo.lock for reproducible binary builds (do not ignore)
+
+# Built binary at repo root (cargo build --release artifacts are in target/)
+/vllmtop
+/vllmtop-*
+
+# Distributions / archives
+/dist/
+/artifacts/
+*.tar.gz
+*.zip
+*.tgz
+
+# IDE / editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# OS / temp
+*.log
+*.tmp
+*.bak
+
+# Test / coverage
+/coverage/
+lcov.info

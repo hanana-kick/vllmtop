@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --release --locked
+      - name: Smoke — help/version
+        run: |
+          ./target/release/vllmtop --help
+          ./target/release/vllmtop --version
+      - name: Check formatting (optional)
+        run: cargo fmt -- --check || echo "fmt not enforced"

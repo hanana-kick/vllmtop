@@ -95,8 +95,8 @@ pub struct MetricState {
     pub log_lines: VecDeque<String>,
     pub max_log_lines: usize,
     pub paused: bool,
+    pub last_log_at: Option<DateTime<Utc>>,
 }
-
 impl Default for MetricState {
     fn default() -> Self {
         Self {
@@ -109,10 +109,10 @@ impl Default for MetricState {
             log_lines: VecDeque::new(),
             max_log_lines: 500,
             paused: false,
+            last_log_at: None,
         }
     }
 }
-
 impl MetricState {
     pub fn new() -> Self {
         Self::default()
@@ -167,6 +167,18 @@ impl MetricState {
         self.log_lines.push_back(line);
         if self.log_lines.len() > self.max_log_lines {
             self.log_lines.pop_front();
+        }
+    }
+
+    pub fn set_last_log_time(&mut self, t: DateTime<Utc>) {
+        self.last_log_at = Some(t);
+    }
+
+    pub fn last_log_str(&self) -> String {
+        if let Some(t) = self.last_log_at {
+            t.with_timezone(&chrono::Local).format("%H:%M:%S").to_string()
+        } else {
+            "--:--:--".to_string()
         }
     }
 

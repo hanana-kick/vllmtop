@@ -156,12 +156,13 @@ vllmtop --socket /other/docker.sock qwen38 --tail 200
 
 ```
 ┌ vllmtop ─ qwen38 ────────────────────────────────────────────────┐
-│ RUNNING 4     WAITING 0                         uptime 01:42:31  │
+│ RUNNING 4  WAITING 0  uptime 01:42:31  last log 01:42:30  container: qwen38  │
 ├ Throughput ──────────────────────┬ KV Cache ─────────────────────┤
 │ Generation     1.80 tok/s        │ 45.2%                         │
 │ Prompt         0.00 tok/s        │ █████████░░░░░░░░░░           │
 ├ Prefix Cache ────────────────────┼ Requests ─────────────────────┤
 │ Hit rate       93.6%             │ Running       4               │
+│ ██████████████████░              │ Waiting       0               │
 ├ Speculative Decoding ────────────────────────────────────────────┤
 │ Acceptance 100% │ Mean 3.00 │ Accepted 1.20 │ Draft 1.20 tok/s │
 ├ PLE mmap ────────────────────────────────────────────────────────┤
@@ -170,9 +171,10 @@ vllmtop --socket /other/docker.sock qwen38 --tail 200
  c container   l logs   p pause   r reset history   q quit
 ```
 
-- **Throughput**: Generation / Prompt tokens/s with sparklines
-- **KV Cache**: GPU KV cache usage
-- **Prefix Cache**: Hit rate
+- **Header**: RUNNING/WAITING, uptime, last log time, container
+- **Throughput**: Generation / Prompt tokens/s
+- **KV Cache**: GPU KV cache usage (bar)
+- **Prefix Cache**: Hit rate (bar)
 - **Requests**: Running / Waiting
 - **Speculative Decoding**: Acceptance rate, mean, throughput
 - **PLE mmap**: Op time, gather time, rows, size

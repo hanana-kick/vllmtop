@@ -156,12 +156,13 @@ vllmtop --socket /other/docker.sock qwen38 --tail 200
 
 ```
 ┌ vllmtop ─ qwen38 ────────────────────────────────────────────────┐
-│ RUNNING 4     WAITING 0                         uptime 01:42:31  │
+│ RUNNING 4  WAITING 0  uptime 01:42:31  last log 01:42:30  container: qwen38  │
 ├ Throughput ──────────────────────┬ KV Cache ─────────────────────┤
 │ Generation     1.80 tok/s        │ 45.2%                         │
 │ Prompt         0.00 tok/s        │ █████████░░░░░░░░░░           │
 ├ Prefix Cache ────────────────────┼ Requests ─────────────────────┤
 │ Hit rate       93.6%             │ Running       4               │
+│ ██████████████████░              │ Waiting       0               │
 ├ Speculative Decoding ────────────────────────────────────────────┤
 │ Acceptance 100% │ Mean 3.00 │ Accepted 1.20 │ Draft 1.20 tok/s │
 ├ PLE mmap ────────────────────────────────────────────────────────┤
@@ -170,12 +171,12 @@ vllmtop --socket /other/docker.sock qwen38 --tail 200
  c container   l logs   p pause   r reset history   q quit
 ```
 
-- **Throughput**: Generation / Prompt 토큰 처리량과 스파크라인
-- **KV Cache**: GPU KV 캐시 사용률
-- **Prefix Cache**: 히트율
+- **Header**: RUNNING/WAITING, uptime, last log 시간, 컨테이너 이름
+
+- **Throughput**: Generation / Prompt 토큰 처리량
+- **KV Cache**: GPU KV 캐시 사용률 (바 표시)
+- **Prefix Cache**: 히트율 (바 표시)
 - **Requests**: Running / Waiting 요청 수
-- **Speculative Decoding**: 채택률, 평균 채택 길이, 처리량
-- **PLE mmap**: 연산 시간, gather 시간, 행 수, 용량
 
 #### 키
 

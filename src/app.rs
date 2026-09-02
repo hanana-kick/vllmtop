@@ -119,6 +119,14 @@ impl App {
     pub fn poll_logs(&mut self) {
         if let Some(rx) = &mut self.pending_rx {
             while let Ok(line) = rx.try_recv() {
+                // Extract docker timestamp if present (e.g. 2026-09-02T21:50:36.123456789Z)
+                if let Some(first) = line.split_whitespace().next() {
+                    if first.contains('T') && first.ends_with('Z') {
+                        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(first) {
+                            self.state.set_last_log_time(dt.with_timezone(&chrono::Utc));
+                        }
+                    }
+                }
                 self.state.push_log(line.clone());
                 if let Some(upd) = crate::parser::VllmLogParser::parse_line(&line) {
                     self.state.apply_update(upd);
@@ -126,7 +134,6 @@ impl App {
             }
         }
     }
-
     pub fn on_key(&mut self, key: crossterm::event::KeyEvent) {
         if key.kind != KeyEventKind::Press {
             return;
@@ -316,8 +323,9 @@ impl App {
             Span::styled(format!(" RUNNING {:>3} ", self.state.current.running), Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(format!(" WAITING {:>3} ", self.state.current.waiting)),
             Span::raw(format!(" uptime {} ", self.state.uptime_str())),
+            Span::raw(format!(" last log {} ", self.state.last_log_str())),
             Span::styled(paused_str, Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(format!(" container: {} ", truncate(&container_name, 24))),
+            Span::raw(format!(" container: {} ", truncate(&container_name, 18))),
         ]);
         let header_title = format!(" vllmtop ─ {} ", container_name);
         let header = Paragraph::new(header_line).block(block_default(&header_title));
@@ -367,7 +375,6 @@ impl App {
         let inner = block.inner(area);
         f.render_widget(block, area);
         if inner.height < 2 || inner.width < 10 { return; }
-        // Numbers only: two lines, no sparkline
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::raw("Generation "),
@@ -390,13 +397,12 @@ impl App {
         let inner = block.inner(area);
         f.render_widget(block, area);
         if inner.height < 1 || inner.width < 10 { return; }
-        // Numbers only: show percentage and used/total if available, no bar
-        let label = format!("{:.1}%", pct);
-        f.render_widget(Paragraph::new(label), Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 });
+        f.render_widget(Paragraph::new(format!("{:.1}%", pct)), Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 });
         if inner.height >= 2 {
-            // Second line: show raw value for context
-            let detail = format!("GPU KV cache usage");
-            f.render_widget(Paragraph::new(detail), Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 });
+            let bar_width = inner.width as usize;
+            let filled = ((pct / 100.0) * bar_width as f32).round() as usize;
+            let bar = format!("{}{}", "█".repeat(filled), "░".repeat(bar_width.saturating_sub(filled)));
+            f.render_widget(Paragraph::new(bar), Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 });
         }
     }
 
@@ -412,6 +418,12 @@ impl App {
             "Hit rate --".to_string()
         };
         f.render_widget(Paragraph::new(label), Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 });
+        if inner.height >= 2 {
+            let bar_width = inner.width as usize;
+            let filled = ((hit / 100.0) * bar_width as f32).round() as usize;
+            let bar = format!("{}{}", "█".repeat(filled), "░".repeat(bar_width.saturating_sub(filled)));
+            f.render_widget(Paragraph::new(bar), Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 });
+        }
     }
 
     fn draw_requests(&self, f: &mut Frame, area: Rect) {

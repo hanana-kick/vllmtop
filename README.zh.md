@@ -156,12 +156,13 @@ vllmtop --socket /other/docker.sock qwen38 --tail 200
 
 ```
 ┌ vllmtop ─ qwen38 ────────────────────────────────────────────────┐
-│ RUNNING 4     WAITING 0                         uptime 01:42:31  │
+│ RUNNING 4  WAITING 0  uptime 01:42:31  last log 01:42:30  container: qwen38  │
 ├ Throughput ──────────────────────┬ KV Cache ─────────────────────┤
 │ Generation     1.80 tok/s        │ 45.2%                         │
 │ Prompt         0.00 tok/s        │ █████████░░░░░░░░░░           │
 ├ Prefix Cache ────────────────────┼ Requests ─────────────────────┤
 │ Hit rate       93.6%             │ Running       4               │
+│ ██████████████████░              │ Waiting       0               │
 ├ Speculative Decoding ────────────────────────────────────────────┤
 │ Acceptance 100% │ Mean 3.00 │ Accepted 1.20 │ Draft 1.20 tok/s │
 ├ PLE mmap ────────────────────────────────────────────────────────┤
@@ -170,9 +171,10 @@ vllmtop --socket /other/docker.sock qwen38 --tail 200
  c container   l logs   p pause   r reset history   q quit
 ```
 
-- **Throughput**: Generation / Prompt 每秒 token 数与火花线
-- **KV Cache**: GPU KV 缓存使用率
-- **Prefix Cache**: 命中率
+- **Header**: RUNNING/WAITING, uptime, last log 时间, 容器
+- **Throughput**: Generation / Prompt 每秒 token 数
+- **KV Cache**: GPU KV 缓存使用率（条形图）
+- **Prefix Cache**: 命中率（条形图）
 - **Requests**: 运行中 / 等待中
 - **Speculative Decoding**: 接受率、平均接受长度、吞吐
 - **PLE mmap**: 单次操作耗时、gather 耗时、行数、大小

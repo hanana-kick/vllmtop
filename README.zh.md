@@ -1,94 +1,94 @@
 # vllmtop
 
-btop 스타일 vLLM 모니터링 TUI — Docker 로그를 실시간으로 파싱해 처리량, KV 캐시, 요청 상태를 한눈에 표시
+类 btop 的 vLLM 监控 TUI — 实时解析 Docker 日志，直观展示吞吐、KV 缓存和请求状态
 
-> 단일 바이너리, Docker 소켓만으로 동작
+> 单一二进制文件，仅需 Docker 套接字即可运行
 
 **Language:** [한국어](README.md) | [English](README.en.md) | [日本語](README.ja.md) | [中文](README.zh.md)
 
 ---
 
-### 설치
+### 安装
 
-#### 1) 릴리즈에서 다운로드 (권장)
+#### 1) 从 Releases 下载（推荐）
 
 ```bash
-# 최신 릴리즈 바이너리 다운로드
+# 下载最新二进制
 curl -LO https://github.com/hanana-kick/vllmtop/releases/latest/download/vllmtop-linux-x86_64
 chmod +x vllmtop-linux-x86_64
 sudo install -m 755 vllmtop-linux-x86_64 /usr/local/bin/vllmtop
 
-# 또는 tar.gz 로 다운로드
+# 或通过 tar.gz
 curl -LO https://github.com/hanana-kick/vllmtop/releases/latest/download/vllmtop-linux-x86_64.tar.gz
 tar xzf vllmtop-linux-x86_64.tar.gz
 sudo install -m 755 vllmtop-linux-x86_64 /usr/local/bin/vllmtop
 ```
 
-ARM64 서버인 경우 `vllmtop-linux-aarch64` 를 사용하세요.
+ARM64 服务器请使用 `vllmtop-linux-aarch64`。
 
-#### 2) 설치 스크립트 사용
+#### 2) 使用安装脚本
 
-tar.gz 를 풀면 `install.sh` 가 포함되어 있습니다.
+`tar.gz` 中包含 `install.sh`。
 
 ```bash
 tar xzf vllmtop-linux-x86_64.tar.gz
-./install.sh              # /usr/local/bin 에 설치 (권한 없으면 ~/.local/bin)
-./install.sh --user       # ~/.local/bin 에 설치
-./install.sh --system     # /usr/local/bin 에 설치
-./install.sh --prefix /opt/bin  # 원하는 경로에 설치
+./install.sh              # 到 /usr/local/bin（不可写则到 ~/.local/bin）
+./install.sh --user       # 到 ~/.local/bin
+./install.sh --system     # 到 /usr/local/bin
+./install.sh --prefix /opt/bin  # 自定义路径
 ```
 
-설치 후 `~/.local/bin` 에 설치한 경우 PATH 추가가 필요할 수 있습니다.
+若安装到 `~/.local/bin`，请按需添加到 PATH：
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-#### 3) 수동 설치
+#### 3) 手动安装
 
 ```bash
 sudo install -m 755 ./vllmtop /usr/local/bin/vllmtop
-# 또는 사용자 경로
+# 或用户目录
 install -Dm755 ./vllmtop ~/.local/bin/vllmtop
 ```
 
-#### 권한
+#### 权限
 
 ```bash
 ls -l /var/run/docker.sock
 # srw-rw---- root docker ...
-docker ps   # 이 명령이 동작하면 vllmtop 도 동작합니다
+docker ps   # 此命令可用，则 vllmtop 即可用
 ```
 
-`docker ps` 가 권한 오류라면 Docker 그룹에 추가하거나 `sudo` 로 실행하세요.
+若 `docker ps` 提示权限不足，请加入 docker 组或使用 `sudo`：
 
 ```bash
 sudo usermod -aG docker $USER
 newgrp docker
-# 또는
+# 或
 sudo vllmtop
 ```
 
-#### 삭제
+#### 卸载
 
 ```bash
-./uninstall.sh              # /usr/local/bin 과 ~/.local/bin 에서 자동 제거
-./uninstall.sh --user       # ~/.local/bin 만
-./uninstall.sh --system     # /usr/local/bin 만
-# 수동
+./uninstall.sh              # 从 /usr/local/bin 和 ~/.local/bin 同时移除
+./uninstall.sh --user       # 仅 ~/.local/bin
+./uninstall.sh --system     # 仅 /usr/local/bin
+# 手动
 sudo rm -f /usr/local/bin/vllmtop
 rm -f ~/.local/bin/vllmtop
 ```
 
-### 사용법
+### 使用方法
 
-#### 기본 실행 — 컨테이너 선택
+#### 交互式 — 容器选择
 
 ```bash
 vllmtop
 ```
 
-실행 중인 Docker 컨테이너 목록이 표시됩니다.
+显示所有运行中的容器。
 
 ```
 vllmtop
@@ -99,36 +99,36 @@ Select Docker container
 > qwen38                  provsalt/qwen3.8-flash...
   glm53                   glm53-vllm:latest
 
-↑/↓ 선택   Enter 열기   q 종료
+↑/↓ 选择   Enter 打开   q 退出
 ```
 
-원하는 컨테이너에서 `Enter`.
+在目标容器上按 `Enter`。
 
-#### 바로 연결 — 선택 화면 건너뛰기
+#### 直接连接 — 跳过选择界面
 
 ```bash
 vllmtop qwen38
 vllmtop glm53
-vllmtop a1b2c3d4e5f6   # 컨테이너 ID 일부도 가능
+vllmtop a1b2c3d4e5f6   # 容器 ID 前缀亦可
 ```
 
-#### 옵션
+#### 选项
 
 ```bash
 vllmtop --help
 vllmtop --version
 vllmtop --socket /var/run/docker.sock
-vllmtop qwen38 --tail 500          # 시작 시 가져올 과거 로그 줄 수
+vllmtop qwen38 --tail 500
 vllmtop --socket /other/docker.sock qwen38 --tail 200
 ```
 
-| 옵션 | 설명 | 기본값 |
+| 选项 | 说明 | 默认值 |
 |------|------|--------|
-| `CONTAINER` | 바로 연결할 컨테이너 이름/ID | 없음 (선택 화면) |
-| `--socket PATH` | Docker 소켓 경로 | `/var/run/docker.sock` |
-| `--tail N` | 시작 시 읽어올 과거 로그 줄 수 | `100` |
+| `CONTAINER` | 直接连接的容器名/ID | 无（显示选择界面） |
+| `--socket PATH` | Docker 套接字路径 | `/var/run/docker.sock` |
+| `--tail N` | 启动时读取的历史日志行数 | `100` |
 
-#### 대시보드
+#### 仪表盘
 
 ```
 ┌ vllmtop ─ qwen38 ────────────────────────────────────────────────┐
@@ -146,22 +146,22 @@ vllmtop --socket /other/docker.sock qwen38 --tail 200
  c container   l logs   p pause   r reset history   q quit
 ```
 
-- **Throughput**: Generation / Prompt 토큰 처리량과 스파크라인
-- **KV Cache**: GPU KV 캐시 사용률
-- **Prefix Cache**: 히트율
-- **Requests**: Running / Waiting 요청 수
-- **Speculative Decoding**: 채택률, 평균 채택 길이, 처리량
-- **PLE mmap**: 연산 시간, gather 시간, 행 수, 용량
+- **Throughput**: Generation / Prompt 每秒 token 数与火花线
+- **KV Cache**: GPU KV 缓存使用率
+- **Prefix Cache**: 命中率
+- **Requests**: 运行中 / 等待中
+- **Speculative Decoding**: 接受率、平均接受长度、吞吐
+- **PLE mmap**: 单次操作耗时、gather 耗时、行数、大小
 
-#### 키
+#### 按键
 
-| 키 | 동작 |
-|----|------|
-| `↑` `↓` / `k` `j` | 컨테이너 목록 이동 (선택 화면), 로그 스크롤 (로그 화면) |
-| `Enter` | 컨테이너 열기 |
-| `c` | 컨테이너 전환 (목록으로 돌아가기) |
-| `l` | 로그 화면 전환 / 복귀 |
-| `p` | 일시정지 / 재개 |
-| `r` | 히스토리 초기화 (선택 화면에서는 목록 새로고침) |
-| `q` / `Esc` | 종료 (로그 화면에서는 대시보드로 복귀) |
-| `Ctrl+C` | 종료 |
+| 按键 | 功能 |
+|------|------|
+| `↑` `↓` / `k` `j` | 列表移动（选择界面）、日志滚动（日志界面） |
+| `Enter` | 打开容器 |
+| `c` | 切换容器（返回选择界面） |
+| `l` | 切换日志 / 返回仪表盘 |
+| `p` | 暂停 / 恢复 |
+| `r` | 重置历史（选择界面为刷新列表） |
+| `q` / `Esc` | 退出（日志界面则返回仪表盘） |
+| `Ctrl+C` | 退出 |

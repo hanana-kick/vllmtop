@@ -10,32 +10,32 @@
 
 ### 安装
 
-#### 1) 从 Releases 下载（推荐）
+#### 一行安装 (GitHub) — 推荐
+
+最简单的方式。直接从 GitHub 获取安装脚本，自动识别架构（x86_64 / aarch64）并下载最新版本。
 
 ```bash
-# 下载最新二进制
-curl -LO https://github.com/hanana-kick/vllmtop/releases/latest/download/vllmtop-linux-x86_64
-chmod +x vllmtop-linux-x86_64
-sudo install -m 755 vllmtop-linux-x86_64 /usr/local/bin/vllmtop
-
-# 或通过 tar.gz
-curl -LO https://github.com/hanana-kick/vllmtop/releases/latest/download/vllmtop-linux-x86_64.tar.gz
-tar xzf vllmtop-linux-x86_64.tar.gz
-sudo install -m 755 vllmtop-linux-x86_64 /usr/local/bin/vllmtop
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | bash
 ```
 
-ARM64 服务器请使用 `vllmtop-linux-aarch64`。
-
-#### 2) 使用安装脚本
-
-`tar.gz` 中包含 `install.sh`。
+仅有 `wget` 时：
 
 ```bash
-tar xzf vllmtop-linux-x86_64.tar.gz
-./install.sh              # 到 /usr/local/bin（不可写则到 ~/.local/bin）
-./install.sh --user       # 到 ~/.local/bin
-./install.sh --system     # 到 /usr/local/bin
-./install.sh --prefix /opt/bin  # 自定义路径
+wget -qO- https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | bash
+```
+
+指定版本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | VLLMTOP_VERSION=v0.1.0 bash
+```
+
+选项：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | bash -s -- --user
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | bash -s -- --system
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | bash -s -- --prefix /opt/bin
 ```
 
 若安装到 `~/.local/bin`，请按需添加到 PATH：
@@ -44,7 +44,29 @@ tar xzf vllmtop-linux-x86_64.tar.gz
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-#### 3) 手动安装
+#### 从 Releases 直接下载
+
+若需手动获取或处于离线环境，请从 [Releases](https://github.com/hanana-kick/vllmtop/releases) 直接下载：
+
+```bash
+# 直接下载二进制
+curl -LO https://github.com/hanana-kick/vllmtop/releases/latest/download/vllmtop-linux-x86_64
+chmod +x vllmtop-linux-x86_64
+sudo install -m 755 vllmtop-linux-x86_64 /usr/local/bin/vllmtop
+
+# 或通过 tar.gz（包含 install.sh）
+curl -LO https://github.com/hanana-kick/vllmtop/releases/latest/download/vllmtop-linux-x86_64.tar.gz
+tar xzf vllmtop-linux-x86_64.tar.gz
+sudo install -m 755 vllmtop-linux-x86_64 /usr/local/bin/vllmtop
+# 或使用附带脚本
+./install.sh
+./install.sh --user
+./install.sh --system
+```
+
+ARM64 服务器请使用 `vllmtop-linux-aarch64`。
+
+手动安装：
 
 ```bash
 sudo install -m 755 ./vllmtop /usr/local/bin/vllmtop
@@ -78,6 +100,8 @@ sudo vllmtop
 # 手动
 sudo rm -f /usr/local/bin/vllmtop
 rm -f ~/.local/bin/vllmtop
+# 即使通过一行安装也可同样卸载
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/uninstall.sh | bash
 ```
 
 ### 使用方法

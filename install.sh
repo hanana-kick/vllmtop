@@ -2,12 +2,13 @@
 set -euo pipefail
 
 # vllmtop installer — copies single binary to /usr/local/bin or ~/.local/bin
+# Also supports one-line remote install: curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | bash
 # Usage:
 #   ./install.sh              # auto: /usr/local/bin if writable else ~/.local/bin
 #   ./install.sh --user       # ~/.local/bin
 #   ./install.sh --system     # /usr/local/bin (requires sudo if not root)
 #   ./install.sh --prefix /opt/bin
-#   ./install.sh --socket /var/run/docker.sock  # no effect, just for docs
+#   VLLMTOP_VERSION=v0.1.0 ./install.sh   # specific version
 
 PREFIX=""
 MODE="auto"
@@ -23,23 +24,49 @@ while [[ $# -gt 0 ]]; do
       echo "  --user    install to ~/.local/bin"
       echo "  --system  install to /usr/local/bin"
       echo "  --prefix  custom directory"
+      echo "Env: VLLMTOP_VERSION=v0.1.0 to pin version (default: latest)"
       exit 0
       ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
 
-# Locate binary: prefer ./vllmtop, fallback to target/release/vllmtop
+# Locate binary: prefer ./vllmtop, fallback to target/release/vllmtop, else download
 SRC=""
+TMP_DOWNLOAD=""
+cleanup() { [[ -n "$TMP_DOWNLOAD" && -f "$TMP_DOWNLOAD" ]] && rm -f "$TMP_DOWNLOAD"; }
+trap cleanup EXIT
+
 if [[ -f "./vllmtop" ]]; then
   SRC="./vllmtop"
 elif [[ -f "./target/release/vllmtop" ]]; then
   SRC="./target/release/vllmtop"
 else
-  echo "error: binary not found. Build first:" >&2
-  echo "  cargo build --release" >&2
-  echo "  cp target/release/vllmtop ./vllmtop" >&2
-  exit 1
+  # No local binary — download from GitHub Releases (for one-line install)
+  ARCH="$(uname -m)"
+  case "$ARCH" in
+    x86_64|amd64) ASSET="vllmtop-linux-x86_64" ;;
+    aarch64|arm64) ASSET="vllmtop-linux-aarch64" ;;
+    *) echo "error: unsupported arch $ARCH (supported: x86_64, aarch64)" >&2; exit 1 ;;
+  esac
+  if [[ -n "${VLLMTOP_VERSION:-}" ]]; then
+    URL="https://github.com/hanana-kick/vllmtop/releases/download/${VLLMTOP_VERSION}/${ASSET}"
+  else
+    URL="https://github.com/hanana-kick/vllmtop/releases/latest/download/${ASSET}"
+  fi
+  TMP_DOWNLOAD="$(mktemp /tmp/vllmtop.XXXXXX)"
+  echo "downloading $URL ..."
+  if command -v curl >/dev/null 2>&1; then
+    curl -fL -o "$TMP_DOWNLOAD" "$URL"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$TMP_DOWNLOAD" "$URL"
+  else
+    echo "error: need curl or wget to download binary" >&2
+    echo "Alternatively, download manually from https://github.com/hanana-kick/vllmtop/releases" >&2
+    exit 1
+  fi
+  chmod +x "$TMP_DOWNLOAD"
+  SRC="$TMP_DOWNLOAD"
 fi
 
 # Determine destination

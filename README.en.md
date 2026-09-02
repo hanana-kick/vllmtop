@@ -10,32 +10,32 @@ btop-style TUI for vLLM — parses Docker logs in real time to show throughput, 
 
 ### Installation
 
-#### 1) Download from Releases (Recommended)
+#### One-line Install (GitHub) — Recommended
+
+The simplest way. Fetches the install script directly from GitHub, auto-detects architecture (x86_64 / aarch64) and downloads the latest release.
 
 ```bash
-# Download latest binary
-curl -LO https://github.com/hanana-kick/vllmtop/releases/latest/download/vllmtop-linux-x86_64
-chmod +x vllmtop-linux-x86_64
-sudo install -m 755 vllmtop-linux-x86_64 /usr/local/bin/vllmtop
-
-# Or via tar.gz
-curl -LO https://github.com/hanana-kick/vllmtop/releases/latest/download/vllmtop-linux-x86_64.tar.gz
-tar xzf vllmtop-linux-x86_64.tar.gz
-sudo install -m 755 vllmtop-linux-x86_64 /usr/local/bin/vllmtop
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | bash
 ```
 
-For ARM64 servers, use `vllmtop-linux-aarch64`.
-
-#### 2) Using the Install Script
-
-The `tar.gz` archive includes `install.sh`.
+With `wget`:
 
 ```bash
-tar xzf vllmtop-linux-x86_64.tar.gz
-./install.sh              # to /usr/local/bin (falls back to ~/.local/bin if not writable)
-./install.sh --user       # to ~/.local/bin
-./install.sh --system     # to /usr/local/bin
-./install.sh --prefix /opt/bin  # custom path
+wget -qO- https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | bash
+```
+
+Specific version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | VLLMTOP_VERSION=v0.1.0 bash
+```
+
+Options:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | bash -s -- --user
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | bash -s -- --system
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | bash -s -- --prefix /opt/bin
 ```
 
 If installed to `~/.local/bin`, add it to your PATH if needed:
@@ -44,7 +44,29 @@ If installed to `~/.local/bin`, add it to your PATH if needed:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-#### 3) Manual Install
+#### Direct Download from Releases
+
+If you prefer manual download or are offline, get the asset from [Releases](https://github.com/hanana-kick/vllmtop/releases):
+
+```bash
+# Direct binary
+curl -LO https://github.com/hanana-kick/vllmtop/releases/latest/download/vllmtop-linux-x86_64
+chmod +x vllmtop-linux-x86_64
+sudo install -m 755 vllmtop-linux-x86_64 /usr/local/bin/vllmtop
+
+# Or tar.gz (includes install.sh)
+curl -LO https://github.com/hanana-kick/vllmtop/releases/latest/download/vllmtop-linux-x86_64.tar.gz
+tar xzf vllmtop-linux-x86_64.tar.gz
+sudo install -m 755 vllmtop-linux-x86_64 /usr/local/bin/vllmtop
+# or via included script
+./install.sh
+./install.sh --user
+./install.sh --system
+```
+
+For ARM64 servers, use `vllmtop-linux-aarch64`.
+
+Manual install:
 
 ```bash
 sudo install -m 755 ./vllmtop /usr/local/bin/vllmtop
@@ -78,6 +100,8 @@ sudo vllmtop
 # manual
 sudo rm -f /usr/local/bin/vllmtop
 rm -f ~/.local/bin/vllmtop
+# even if installed via one-line
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/uninstall.sh | bash
 ```
 
 ### Usage

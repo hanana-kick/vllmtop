@@ -10,41 +10,63 @@ btop 스타일 vLLM 모니터링 TUI — Docker 로그를 실시간으로 파싱
 
 ### 설치
 
-#### 1) 릴리즈에서 다운로드 (권장)
+#### 원라인 설치 (GitHub) — 권장
+
+가장 간단한 방법. GitHub에서 설치 스크립트를 바로 받아 실행합니다. 아키텍처(x86_64 / aarch64)를 자동 감지해 최신 릴리즈를 다운로드합니다.
 
 ```bash
-# 최신 릴리즈 바이너리 다운로드
-curl -LO https://github.com/hanana-kick/vllmtop/releases/latest/download/vllmtop-linux-x86_64
-chmod +x vllmtop-linux-x86_64
-sudo install -m 755 vllmtop-linux-x86_64 /usr/local/bin/vllmtop
-
-# 또는 tar.gz 로 다운로드
-curl -LO https://github.com/hanana-kick/vllmtop/releases/latest/download/vllmtop-linux-x86_64.tar.gz
-tar xzf vllmtop-linux-x86_64.tar.gz
-sudo install -m 755 vllmtop-linux-x86_64 /usr/local/bin/vllmtop
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | bash
 ```
 
-ARM64 서버인 경우 `vllmtop-linux-aarch64` 를 사용하세요.
-
-#### 2) 설치 스크립트 사용
-
-tar.gz 를 풀면 `install.sh` 가 포함되어 있습니다.
+`wget` 만 있는 경우:
 
 ```bash
-tar xzf vllmtop-linux-x86_64.tar.gz
-./install.sh              # /usr/local/bin 에 설치 (권한 없으면 ~/.local/bin)
-./install.sh --user       # ~/.local/bin 에 설치
-./install.sh --system     # /usr/local/bin 에 설치
-./install.sh --prefix /opt/bin  # 원하는 경로에 설치
+wget -qO- https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | bash
 ```
 
-설치 후 `~/.local/bin` 에 설치한 경우 PATH 추가가 필요할 수 있습니다.
+특정 버전 설치:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | VLLMTOP_VERSION=v0.1.0 bash
+```
+
+옵션:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | bash -s -- --user
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | bash -s -- --system
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/install.sh | bash -s -- --prefix /opt/bin
+```
+
+`~/.local/bin` 에 설치된 경우 PATH 추가가 필요할 수 있습니다.
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-#### 3) 수동 설치
+#### 릴리즈에서 직접 다운로드
+
+GitHub에서 직접 받고 싶거나 오프라인 환경인 경우: [Releases](https://github.com/hanana-kick/vllmtop/releases) 에서 원하는 파일을 받아 설치하세요.
+
+```bash
+# 바이너리 직접 다운로드
+curl -LO https://github.com/hanana-kick/vllmtop/releases/latest/download/vllmtop-linux-x86_64
+chmod +x vllmtop-linux-x86_64
+sudo install -m 755 vllmtop-linux-x86_64 /usr/local/bin/vllmtop
+
+# 또는 tar.gz (install.sh 포함)
+curl -LO https://github.com/hanana-kick/vllmtop/releases/latest/download/vllmtop-linux-x86_64.tar.gz
+tar xzf vllmtop-linux-x86_64.tar.gz
+sudo install -m 755 vllmtop-linux-x86_64 /usr/local/bin/vllmtop
+# 또는 포함된 스크립트로
+./install.sh
+./install.sh --user
+./install.sh --system
+```
+
+ARM64 서버인 경우 `vllmtop-linux-aarch64` 를 사용하세요.
+
+수동 설치:
 
 ```bash
 sudo install -m 755 ./vllmtop /usr/local/bin/vllmtop
@@ -78,6 +100,8 @@ sudo vllmtop
 # 수동
 sudo rm -f /usr/local/bin/vllmtop
 rm -f ~/.local/bin/vllmtop
+# 원라인으로 받은 경우에도 동일
+curl -fsSL https://raw.githubusercontent.com/hanana-kick/vllmtop/main/uninstall.sh | bash
 ```
 
 ### 사용법

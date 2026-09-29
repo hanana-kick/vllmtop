@@ -41,7 +41,6 @@ class FakeTokenizer:
             "A": 12,
             "B": 13,
             "C": 14,
-            **{str(index): 20 + index for index in range(10)},
         }
         if text.startswith(_BASE):
             suffix = text[len(_BASE) :]
@@ -71,10 +70,9 @@ class FakeTokenizer:
 
 
 class FakeModel:
-    def __init__(self, true_probabilities, *, digit_winner=7):
+    def __init__(self, true_probabilities):
         self.calls = 0
         self.true_probabilities = list(true_probabilities)
-        self.digit_winner = digit_winner
         self.last_batch_size = None
 
     def to(self, device):
@@ -106,8 +104,6 @@ class FakeModel:
             logits[row, 0, 12] = 0.0
             logits[row, 0, 13] = 1.0
             logits[row, 0, 14] = -1.0
-            for digit in range(10):
-                logits[row, 0, 20 + digit] = 5.0 if digit == self.digit_winner else 0.0
         return SimpleNamespace(logits=logits)
 
 
@@ -173,17 +169,45 @@ def test_large_integer_range_uses_fixed_threshold_batch_size() -> None:
     assert result.value["score"] == 37750
 
 
-def test_anchor_strategy_uses_one_row_per_numeric_field() -> None:
-    model = FakeModel([0.95, 0.95], digit_winner=7)
+def test_unique_numeric_literal_skips_model_for_numeric_only_request() -> None:
+    model = FakeModel([])
     selector = QwenSingleForwardSelector(
         tokenizer=FakeTokenizer(),
         model=model,
-        numeric_strategy="anchors",
-        numeric_anchors=10,
+        numeric_thresholds=2,
     )
 
     result = selector.select(
-        "The measured temperature is approximately 58 C. Run is required.",
+        "The measured temperature is exactly 55 degrees Celsius.",
+        {
+            "type": "object",
+            "properties": {
+                "temperature": {
+                    "type": "number",
+                    "minimum": -20,
+                    "maximum": 80,
+                }
+            },
+        },
+    )
+
+    assert model.calls == 0
+    assert result.forward_calls == 0
+    assert result.batch_size == 0
+    assert result.value["temperature"] == 55
+    assert result.fields[0].method == "literal-fastpath"
+
+
+def test_literal_fastpath_and_boolean_share_one_remaining_forward() -> None:
+    model = FakeModel([0.95])
+    selector = QwenSingleForwardSelector(
+        tokenizer=FakeTokenizer(),
+        model=model,
+        numeric_thresholds=2,
+    )
+
+    result = selector.select(
+        "The measured temperature is exactly 55 degrees Celsius and run is required.",
         {
             "type": "object",
             "properties": {
@@ -198,27 +222,80 @@ def test_anchor_strategy_uses_one_row_per_numeric_field() -> None:
     )
 
     assert model.calls == 1
-    assert result.batch_size == 2
     assert result.forward_calls == 1
-    assert result.fields[0].method == "numeric-anchors"
-    assert result.fields[0].details["selected_anchor"] == "7"
-    assert result.value["temperature"] == pytest.approx(
-        -20 + (7 / 9) * 100
-    )
-    assert result.value["run"] is True
+    assert result.batch_size == 1
+    assert result.value == {"temperature": 55, "run": True}
+    assert result.fields[0].method == "literal-fastpath"
 
 
-def test_large_integer_anchor_is_quantized_to_integer() -> None:
-    model = FakeModel([0.5], digit_winner=7)
+def test_literal_fastpath_refuses_ambiguous_numeric_fields() -> None:
+    model = FakeModel([0.9, 0.8, 0.9, 0.8])
     selector = QwenSingleForwardSelector(
         tokenizer=FakeTokenizer(),
         model=model,
-        numeric_strategy="anchors",
-        numeric_anchors=10,
+        numeric_thresholds=2,
     )
 
     result = selector.select(
-        "score",
+        "The observed value is 10.",
+        {
+            "type": "object",
+            "properties": {
+                "left": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                },
+                "right": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                },
+            },
+        },
+    )
+
+    assert model.calls == 1
+    assert result.batch_size == 4
+    assert all(field.method == "normalized-thresholds" for field in result.fields)
+
+
+def test_literal_fastpath_refuses_range_boundary() -> None:
+    model = FakeModel([0.9, 0.8])
+    selector = QwenSingleForwardSelector(
+        tokenizer=FakeTokenizer(),
+        model=model,
+        numeric_thresholds=2,
+    )
+
+    result = selector.select(
+        "There is 1 enemy approaching.",
+        {
+            "type": "object",
+            "properties": {
+                "danger": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                }
+            },
+        },
+    )
+
+    assert model.calls == 1
+    assert result.batch_size == 2
+    assert result.fields[0].method == "normalized-thresholds"
+
+
+def test_literal_fastpath_parses_thousands_separator() -> None:
+    model = FakeModel([])
+    selector = QwenSingleForwardSelector(
+        tokenizer=FakeTokenizer(),
+        model=model,
+    )
+
+    result = selector.select(
+        "The current score is 37,750.",
         {
             "type": "object",
             "properties": {
@@ -231,8 +308,8 @@ def test_large_integer_anchor_is_quantized_to_integer() -> None:
         },
     )
 
-    assert result.batch_size == 1
-    assert result.value["score"] == 39111
+    assert result.forward_calls == 0
+    assert result.value["score"] == 37750
 
 
 def test_isotonic_probability_repair() -> None:

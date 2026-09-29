@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass
 from statistics import fmean
 from typing import Any
@@ -118,13 +117,6 @@ class QwenSingleForwardSelector:
                 rows_by_field[field_index].append(len(tasks))
                 tasks.append(task)
 
-            calibration_task = self._prepare_numeric_calibration_task(
-                field_index,
-                field,
-            )
-            rows_by_field[field_index].append(len(tasks))
-            tasks.append(calibration_task)
-
         task_probabilities: list[list[float]] = []
         forward_calls = 0
 
@@ -215,42 +207,19 @@ class QwenSingleForwardSelector:
                 )
                 continue
 
-            threshold_rows = [
-                row for row in rows if tasks[row].method == "normalized-threshold"
-            ]
-            calibration_rows = [
-                row for row in rows if tasks[row].method == "numeric-calibration"
-            ]
-            if len(calibration_rows) != 1:
-                raise RuntimeError(
-                    f"numeric field {field.dotted_path} requires exactly one calibration row"
-                )
-
-            calibration_row = calibration_rows[0]
-            calibration_task = tasks[calibration_row]
-            calibration_probabilities = task_probabilities[calibration_row]
-            calibration_true = calibration_probabilities[
-                calibration_task.option_values.index(True)
-            ]
-
             raw_probabilities: list[float] = []
             threshold_details: list[dict[str, Any]] = []
-            for row in threshold_rows:
+            for row in rows:
                 task = tasks[row]
                 probabilities = task_probabilities[row]
                 true_index = task.option_values.index(True)
-                probability_true_raw = probabilities[true_index]
-                probability_true = _subtract_log_odds_bias(
-                    probability_true_raw,
-                    calibration_true,
-                )
+                probability_true = probabilities[true_index]
                 raw_probabilities.append(probability_true)
                 threshold_details.append(
                     {
                         "normalized_threshold": task.normalized_threshold,
                         "threshold": task.threshold_value,
-                        "probability_ge_raw": probability_true_raw,
-                        "probability_ge_calibrated": probability_true,
+                        "probability_ge": probability_true,
                         "output_tokens": {
                             task.option_texts[i]: task.token_ids[i]
                             for i in range(len(task.option_texts))
@@ -275,16 +244,15 @@ class QwenSingleForwardSelector:
                 FieldSelection(
                     path=field.dotted_path,
                     value=value,
-                    method="calibrated-thresholds",
+                    method="normalized-thresholds",
                     confidence=confidence,
                     details={
                         "minimum": field.minimum,
                         "maximum": field.maximum,
                         "multiple_of": field.multiple_of,
                         "integer": field.integer,
-                        "threshold_count": len(threshold_rows),
+                        "threshold_count": len(rows),
                         "normalized_value": normalized_value,
-                        "calibration_probability_true": calibration_true,
                         "thresholds": threshold_details,
                     },
                 )
@@ -387,45 +355,6 @@ class QwenSingleForwardSelector:
             option_texts=labels,
         )
 
-    def _prepare_numeric_calibration_task(
-        self,
-        field_index: int,
-        field: NumericFieldSpec,
-    ) -> _Task:
-        midpoint = numeric_threshold_value(field, 0.5)
-        for false_text, true_text in (
-            ("false", "true"),
-            ("no", "yes"),
-            ("0", "1"),
-        ):
-            rendered = self._render_numeric_calibration_prompt(
-                field,
-                midpoint,
-                false_text,
-                true_text,
-            )
-            false_id = self._single_continuation_token_id(rendered, false_text)
-            true_id = self._single_continuation_token_id(rendered, true_text)
-            if (
-                false_id is not None
-                and true_id is not None
-                and false_id != true_id
-            ):
-                return _Task(
-                    field_index=field_index,
-                    method="numeric-calibration",
-                    rendered_prompt=rendered,
-                    token_ids=(false_id, true_id),
-                    option_values=(False, True),
-                    option_texts=(false_text, true_text),
-                    normalized_threshold=None,
-                    threshold_value=midpoint,
-                )
-
-        raise RuntimeError(
-            f"could not find one-token calibration outputs for numeric field {field.dotted_path}"
-        )
-
     def _prepare_threshold_task(
         self,
         prompt: str,
@@ -513,34 +442,6 @@ class QwenSingleForwardSelector:
         ]
         return self._render_assistant_prefill(messages)
 
-    def _render_numeric_calibration_prompt(
-        self,
-        field: NumericFieldSpec,
-        midpoint: int | float,
-        false_text: str,
-        true_text: str,
-    ) -> str:
-        description = f"\nField description: {field.description}" if field.description else ""
-        messages = [
-            {
-                "role": "system",
-                "content": "You estimate numeric values from context. Output only the requested boolean.",
-            },
-            {
-                "role": "user",
-                "content": (
-                    "Context:\nNo information about the field value is available.\n\n"
-                    f"Field: {field.dotted_path}{description}\n"
-                    f"Allowed range: [{field.minimum}, {field.maximum}]\n"
-                    f"Calibration question: Is the value greater than or equal to {midpoint}?\n"
-                    "There is intentionally no evidence favoring either answer. "
-                    f"Treat {false_text} and {true_text} as equally plausible.\n"
-                    f"Return exactly {false_text} or {true_text}."
-                ),
-            },
-        ]
-        return self._render_assistant_prefill(messages)
-
     def _render_threshold_prompt(
         self,
         prompt: str,
@@ -553,7 +454,13 @@ class QwenSingleForwardSelector:
         messages = [
             {
                 "role": "system",
-                "content": "You estimate numeric values from context. Output only the requested boolean.",
+                "content": (
+                    "You perform a mathematical threshold test for one numeric JSON field. "
+                    "First identify the single best scalar value from the context, then compare "
+                    "that value with the threshold. If the context explicitly states the field's "
+                    "numeric value, use that exact number. Otherwise infer the value from meaning. "
+                    "Do not default toward the midpoint or endpoints. Output only the requested boolean."
+                ),
             },
             {
                 "role": "user",
@@ -561,8 +468,9 @@ class QwenSingleForwardSelector:
                     f"Context:\n{prompt}\n\n"
                     f"Field: {field.dotted_path}{description}\n"
                     f"Allowed range: [{field.minimum}, {field.maximum}]\n"
-                    f"Question: Is the best value for this field greater than or equal to "
-                    f"{threshold_value}?\n"
+                    f"Threshold: {threshold_value}\n"
+                    "Decision rule: answer true iff the field value is numerically greater than "
+                    "or equal to the threshold; otherwise answer false.\n"
                     f"Return exactly {false_text} or {true_text}."
                 ),
             },
@@ -607,20 +515,6 @@ def _candidate_output_text(value: Any) -> str | None:
     if isinstance(value, (int, float)):
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     return None
-
-
-def _subtract_log_odds_bias(
-    observed_probability: float,
-    prior_probability: float,
-) -> float:
-    epsilon = 1e-6
-    observed = min(1.0 - epsilon, max(epsilon, float(observed_probability)))
-    prior = min(1.0 - epsilon, max(epsilon, float(prior_probability)))
-    corrected_logit = (
-        math.log(observed / (1.0 - observed))
-        - math.log(prior / (1.0 - prior))
-    )
-    return 1.0 / (1.0 + math.exp(-corrected_logit))
 
 
 def _isotonic_nonincreasing(values: list[float]) -> list[float]:

@@ -34,7 +34,7 @@ assert sha256 == EXPECTED_SHA256
 selector = QwenSingleForwardSelector(
     model_id=str(model_dir),
     dtype="bfloat16",
-    numeric_thresholds=4,
+    numeric_thresholds=7,
 )
 
 cases = [
@@ -125,7 +125,7 @@ payload = {
     "model_id": MODEL_ID,
     "revision": REVISION,
     "weights_sha256": sha256,
-    "numeric_thresholds": 4,
+    "numeric_thresholds": 7,
     "cases": results,
     "total_seconds": time.perf_counter() - started,
 }

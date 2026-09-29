@@ -6,6 +6,7 @@ import torch
 from autoselect.selector import (
     QwenSingleForwardSelector,
     _isotonic_nonincreasing,
+    _mean_log_odds_probability,
 )
 
 
@@ -70,9 +71,19 @@ class FakeTokenizer:
 
 
 class FakeModel:
-    def __init__(self, true_probabilities):
+    def __init__(
+        self,
+        *,
+        true_probabilities,
+        b_probabilities=None,
+    ):
         self.calls = 0
         self.true_probabilities = list(true_probabilities)
+        self.b_probabilities = (
+            list(b_probabilities)
+            if b_probabilities is not None
+            else [0.5] * len(self.true_probabilities)
+        )
         self.last_batch_size = None
 
     def to(self, device):
@@ -96,22 +107,36 @@ class FakeModel:
         assert use_cache is False
         assert logits_to_keep == 1
         assert len(self.true_probabilities) == input_ids.shape[0]
+        assert len(self.b_probabilities) == input_ids.shape[0]
 
         logits = torch.full((input_ids.shape[0], 1, 128), -20.0)
-        for row, probability_true in enumerate(self.true_probabilities):
+        for row, (probability_true, probability_b) in enumerate(
+            zip(self.true_probabilities, self.b_probabilities, strict=True)
+        ):
             logits[row, 0, 10] = torch.log(torch.tensor(1.0 - probability_true))
             logits[row, 0, 11] = torch.log(torch.tensor(probability_true))
-            logits[row, 0, 12] = 0.0
-            logits[row, 0, 13] = 1.0
+            logits[row, 0, 12] = torch.log(torch.tensor(1.0 - probability_b))
+            logits[row, 0, 13] = torch.log(torch.tensor(probability_b))
             logits[row, 0, 14] = -1.0
         return SimpleNamespace(logits=logits)
 
 
+def _mapped_b_probabilities(semantic_true_probabilities):
+    rows = []
+    for probability_true in semantic_true_probabilities:
+        rows.extend([probability_true, 1.0 - probability_true])
+    return rows
+
+
 def test_dynamic_number_and_boolean_share_one_forward() -> None:
-    # Each threshold uses a complementary >= / < pair. With complementary
-    # probabilities the calibrated values remain .9, .8, .7, .6, whose mean
-    # is .75 => -20 + .75*100 = 55. The final row is the boolean field.
-    model = FakeModel([0.9, 0.1, 0.8, 0.2, 0.7, 0.3, 0.6, 0.4, 0.95])
+    threshold_probs = [0.9, 0.8, 0.7, 0.6]
+    # 4 thresholds * 2 swapped mappings + 1 boolean field = batch 9.
+    b_probs = _mapped_b_probabilities(threshold_probs) + [0.5]
+    true_probs = [0.5] * 8 + [0.95]
+    model = FakeModel(
+        true_probabilities=true_probs,
+        b_probabilities=b_probs,
+    )
     selector = QwenSingleForwardSelector(
         tokenizer=FakeTokenizer(),
         model=model,
@@ -139,12 +164,16 @@ def test_dynamic_number_and_boolean_share_one_forward() -> None:
     assert result.batch_size == 9
     assert result.value["temperature"] == pytest.approx(55.0)
     assert result.value["run"] is True
-    assert result.fields[0].method == "paired-normalized-thresholds"
+    assert result.fields[0].method == "mapped-thresholds"
     assert result.fields[1].method == "direct-choice"
 
 
 def test_large_integer_range_uses_fixed_threshold_batch_size() -> None:
-    model = FakeModel([0.9, 0.1, 0.8, 0.2, 0.7, 0.3, 0.6, 0.4])
+    threshold_probs = [0.9, 0.8, 0.7, 0.6]
+    model = FakeModel(
+        true_probabilities=[0.5] * 8,
+        b_probabilities=_mapped_b_probabilities(threshold_probs),
+    )
     selector = QwenSingleForwardSelector(
         tokenizer=FakeTokenizer(),
         model=model,
@@ -170,6 +199,28 @@ def test_large_integer_range_uses_fixed_threshold_batch_size() -> None:
     assert result.value["score"] == 37750
 
 
+def test_mapping_swap_cancels_constant_label_bias() -> None:
+    # Semantic log-odds = logit(0.7). Add +1.0 bias to token B.
+    semantic_logit = torch.logit(torch.tensor(0.7)).item()
+    label_bias = 1.0
+
+    normal_semantic_true = torch.sigmoid(
+        torch.tensor(semantic_logit + label_bias)
+    ).item()
+
+    # In the swapped prompt semantic true is A, so semantic P(true)
+    # is sigmoid(s - bias).
+    swapped_semantic_true = torch.sigmoid(
+        torch.tensor(semantic_logit - label_bias)
+    ).item()
+
+    calibrated = _mean_log_odds_probability(
+        normal_semantic_true,
+        swapped_semantic_true,
+    )
+    assert calibrated == pytest.approx(0.7, abs=1e-6)
+
+
 def test_isotonic_probability_repair() -> None:
     assert _isotonic_nonincreasing([0.9, 0.3, 0.7, 0.1]) == pytest.approx(
         [0.9, 0.5, 0.5, 0.1]
@@ -177,7 +228,10 @@ def test_isotonic_probability_repair() -> None:
 
 
 def test_multitoken_enum_falls_back_to_surrogate_labels() -> None:
-    model = FakeModel([0.5])
+    model = FakeModel(
+        true_probabilities=[0.5],
+        b_probabilities=[0.7310586],
+    )
     selector = QwenSingleForwardSelector(
         tokenizer=FakeTokenizer(),
         model=model,

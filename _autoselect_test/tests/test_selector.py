@@ -9,7 +9,7 @@ from autoselect.selector import (
 )
 
 
-_BASE = "<assistant>Answer: "
+_BASE = "<assistant>Answer:"
 
 
 class FakeTokenizer:

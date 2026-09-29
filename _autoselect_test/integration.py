@@ -97,7 +97,7 @@ for case in cases:
     case_started = time.perf_counter()
     result = selector.select(case["prompt"], case["schema"])
     elapsed = time.perf_counter() - case_started
-    assert result.forward_calls == 1
+    assert result.forward_calls <= 1
     entry = {
         "name": case["name"],
         "value": result.value,

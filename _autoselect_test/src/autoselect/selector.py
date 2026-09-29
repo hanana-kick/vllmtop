@@ -275,6 +275,35 @@ class QwenSingleForwardSelector:
         field_index: int,
         field: ChoiceFieldSpec,
     ) -> _Task:
+        if field.candidates == (False, True):
+            for false_text, true_text in (
+                ("false", "true"),
+                ("no", "yes"),
+                ("0", "1"),
+            ):
+                output_texts = (false_text, true_text)
+                rendered = self._render_choice_prompt(
+                    prompt,
+                    field,
+                    output_texts,
+                    use_labels=False,
+                )
+                false_id = self._single_continuation_token_id(rendered, false_text)
+                true_id = self._single_continuation_token_id(rendered, true_text)
+                if (
+                    false_id is not None
+                    and true_id is not None
+                    and false_id != true_id
+                ):
+                    return _Task(
+                        field_index=field_index,
+                        method="direct-choice",
+                        rendered_prompt=rendered,
+                        token_ids=(false_id, true_id),
+                        option_values=field.candidates,
+                        option_texts=output_texts,
+                    )
+
         direct_texts = tuple(_candidate_output_text(value) for value in field.candidates)
         if (
             all(text is not None for text in direct_texts)

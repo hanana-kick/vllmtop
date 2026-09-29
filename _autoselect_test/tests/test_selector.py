@@ -108,9 +108,10 @@ class FakeModel:
 
 
 def test_dynamic_number_and_boolean_share_one_forward() -> None:
-    # Four threshold rows estimate u=(.9+.8+.7+.6)/4=.75 => -20 + .75*100 = 55.
-    # The final row is the boolean field and strongly favors true.
-    model = FakeModel([0.9, 0.8, 0.7, 0.6, 0.95])
+    # Each threshold uses a complementary >= / < pair. With complementary
+    # probabilities the calibrated values remain .9, .8, .7, .6, whose mean
+    # is .75 => -20 + .75*100 = 55. The final row is the boolean field.
+    model = FakeModel([0.9, 0.1, 0.8, 0.2, 0.7, 0.3, 0.6, 0.4, 0.95])
     selector = QwenSingleForwardSelector(
         tokenizer=FakeTokenizer(),
         model=model,
@@ -133,17 +134,17 @@ def test_dynamic_number_and_boolean_share_one_forward() -> None:
     )
 
     assert model.calls == 1
-    assert model.last_batch_size == 5
+    assert model.last_batch_size == 9
     assert result.forward_calls == 1
-    assert result.batch_size == 5
+    assert result.batch_size == 9
     assert result.value["temperature"] == pytest.approx(55.0)
     assert result.value["run"] is True
-    assert result.fields[0].method == "normalized-thresholds"
+    assert result.fields[0].method == "paired-normalized-thresholds"
     assert result.fields[1].method == "direct-choice"
 
 
 def test_large_integer_range_uses_fixed_threshold_batch_size() -> None:
-    model = FakeModel([0.9, 0.8, 0.7, 0.6])
+    model = FakeModel([0.9, 0.1, 0.8, 0.2, 0.7, 0.3, 0.6, 0.4])
     selector = QwenSingleForwardSelector(
         tokenizer=FakeTokenizer(),
         model=model,
@@ -165,7 +166,7 @@ def test_large_integer_range_uses_fixed_threshold_batch_size() -> None:
     )
 
     assert model.calls == 1
-    assert result.batch_size == 4
+    assert result.batch_size == 8
     assert result.value["score"] == 37750
 
 

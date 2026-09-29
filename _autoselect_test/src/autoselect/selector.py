@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from statistics import fmean
-import math
 from typing import Any
 
 import torch
@@ -109,16 +109,21 @@ class QwenSingleForwardSelector:
                 continue
 
             for normalized_threshold in self._normalized_thresholds():
-                for swap_mapping in (False, True):
-                    task = self._prepare_mapped_threshold_task(
-                        prompt,
-                        field_index,
-                        field,
-                        normalized_threshold,
-                        swap_mapping=swap_mapping,
-                    )
-                    rows_by_field[field_index].append(len(tasks))
-                    tasks.append(task)
+                task = self._prepare_threshold_task(
+                    prompt,
+                    field_index,
+                    field,
+                    normalized_threshold,
+                )
+                rows_by_field[field_index].append(len(tasks))
+                tasks.append(task)
+
+            calibration_task = self._prepare_numeric_calibration_task(
+                field_index,
+                field,
+            )
+            rows_by_field[field_index].append(len(tasks))
+            tasks.append(calibration_task)
 
         task_probabilities: list[list[float]] = []
         forward_calls = 0
@@ -210,44 +215,45 @@ class QwenSingleForwardSelector:
                 )
                 continue
 
-            raw_probabilities: list[float] = []
-            threshold_details: list[dict[str, Any]] = []
-            if len(rows) % 2 != 0:
+            threshold_rows = [
+                row for row in rows if tasks[row].method == "normalized-threshold"
+            ]
+            calibration_rows = [
+                row for row in rows if tasks[row].method == "numeric-calibration"
+            ]
+            if len(calibration_rows) != 1:
                 raise RuntimeError(
-                    f"numeric field {field.dotted_path} has an unpaired mapping row"
+                    f"numeric field {field.dotted_path} requires exactly one calibration row"
                 )
 
-            for offset in range(0, len(rows), 2):
-                normal_row = rows[offset]
-                swapped_row = rows[offset + 1]
-                normal_task = tasks[normal_row]
-                swapped_task = tasks[swapped_row]
-                if normal_task.normalized_threshold != swapped_task.normalized_threshold:
-                    raise RuntimeError(
-                        f"numeric field {field.dotted_path} has mismatched threshold mappings"
-                    )
+            calibration_row = calibration_rows[0]
+            calibration_task = tasks[calibration_row]
+            calibration_probabilities = task_probabilities[calibration_row]
+            calibration_true = calibration_probabilities[
+                calibration_task.option_values.index(True)
+            ]
 
-                normal_probs = task_probabilities[normal_row]
-                swapped_probs = task_probabilities[swapped_row]
-                normal_true = normal_probs[normal_task.option_values.index(True)]
-                swapped_true = swapped_probs[swapped_task.option_values.index(True)]
-                probability_true = _mean_log_odds_probability(
-                    normal_true,
-                    swapped_true,
+            raw_probabilities: list[float] = []
+            threshold_details: list[dict[str, Any]] = []
+            for row in threshold_rows:
+                task = tasks[row]
+                probabilities = task_probabilities[row]
+                true_index = task.option_values.index(True)
+                probability_true_raw = probabilities[true_index]
+                probability_true = _subtract_log_odds_bias(
+                    probability_true_raw,
+                    calibration_true,
                 )
                 raw_probabilities.append(probability_true)
                 threshold_details.append(
                     {
-                        "normalized_threshold": normal_task.normalized_threshold,
-                        "threshold": normal_task.threshold_value,
-                        "probability_ge": probability_true,
-                        "mapping_probabilities": {
-                            "A=false,B=true": normal_true,
-                            "A=true,B=false": swapped_true,
-                        },
+                        "normalized_threshold": task.normalized_threshold,
+                        "threshold": task.threshold_value,
+                        "probability_ge_raw": probability_true_raw,
+                        "probability_ge_calibrated": probability_true,
                         "output_tokens": {
-                            "A": normal_task.token_ids[0],
-                            "B": normal_task.token_ids[1],
+                            task.option_texts[i]: task.token_ids[i]
+                            for i in range(len(task.option_texts))
                         },
                     }
                 )
@@ -269,15 +275,16 @@ class QwenSingleForwardSelector:
                 FieldSelection(
                     path=field.dotted_path,
                     value=value,
-                    method="mapped-thresholds",
+                    method="calibrated-thresholds",
                     confidence=confidence,
                     details={
                         "minimum": field.minimum,
                         "maximum": field.maximum,
                         "multiple_of": field.multiple_of,
                         "integer": field.integer,
-                        "threshold_count": len(rows),
+                        "threshold_count": len(threshold_rows),
                         "normalized_value": normalized_value,
+                        "calibration_probability_true": calibration_true,
                         "thresholds": threshold_details,
                     },
                 )
@@ -380,40 +387,86 @@ class QwenSingleForwardSelector:
             option_texts=labels,
         )
 
-    def _prepare_mapped_threshold_task(
+    def _prepare_numeric_calibration_task(
+        self,
+        field_index: int,
+        field: NumericFieldSpec,
+    ) -> _Task:
+        midpoint = numeric_threshold_value(field, 0.5)
+        for false_text, true_text in (
+            ("false", "true"),
+            ("no", "yes"),
+            ("0", "1"),
+        ):
+            rendered = self._render_numeric_calibration_prompt(
+                field,
+                midpoint,
+                false_text,
+                true_text,
+            )
+            false_id = self._single_continuation_token_id(rendered, false_text)
+            true_id = self._single_continuation_token_id(rendered, true_text)
+            if (
+                false_id is not None
+                and true_id is not None
+                and false_id != true_id
+            ):
+                return _Task(
+                    field_index=field_index,
+                    method="numeric-calibration",
+                    rendered_prompt=rendered,
+                    token_ids=(false_id, true_id),
+                    option_values=(False, True),
+                    option_texts=(false_text, true_text),
+                    normalized_threshold=None,
+                    threshold_value=midpoint,
+                )
+
+        raise RuntimeError(
+            f"could not find one-token calibration outputs for numeric field {field.dotted_path}"
+        )
+
+    def _prepare_threshold_task(
         self,
         prompt: str,
         field_index: int,
         field: NumericFieldSpec,
         normalized_threshold: float,
-        *,
-        swap_mapping: bool,
     ) -> _Task:
         threshold_value = numeric_threshold_value(field, normalized_threshold)
-        option_values = (True, False) if swap_mapping else (False, True)
-        rendered = self._render_mapped_threshold_prompt(
-            prompt,
-            field,
-            threshold_value,
-            option_values,
-        )
-        token_ids = tuple(
-            self._single_continuation_token_id(rendered, label)
-            for label in ("A", "B")
-        )
-        if any(token_id is None for token_id in token_ids):
-            raise RuntimeError(
-                f"could not encode A/B threshold labels for numeric field {field.dotted_path}"
+
+        for false_text, true_text in (
+            ("false", "true"),
+            ("no", "yes"),
+            ("0", "1"),
+        ):
+            rendered = self._render_threshold_prompt(
+                prompt,
+                field,
+                threshold_value,
+                false_text,
+                true_text,
             )
-        return _Task(
-            field_index=field_index,
-            method="mapped-threshold",
-            rendered_prompt=rendered,
-            token_ids=tuple(int(token_id) for token_id in token_ids if token_id is not None),
-            option_values=option_values,
-            option_texts=("A", "B"),
-            normalized_threshold=normalized_threshold,
-            threshold_value=threshold_value,
+            false_id = self._single_continuation_token_id(rendered, false_text)
+            true_id = self._single_continuation_token_id(rendered, true_text)
+            if (
+                false_id is not None
+                and true_id is not None
+                and false_id != true_id
+            ):
+                return _Task(
+                    field_index=field_index,
+                    method="normalized-threshold",
+                    rendered_prompt=rendered,
+                    token_ids=(false_id, true_id),
+                    option_values=(False, True),
+                    option_texts=(false_text, true_text),
+                    normalized_threshold=normalized_threshold,
+                    threshold_value=threshold_value,
+                )
+
+        raise RuntimeError(
+            f"could not find one-token boolean outputs for numeric field {field.dotted_path}"
         )
 
     def _render_choice_prompt(
@@ -460,22 +513,47 @@ class QwenSingleForwardSelector:
         ]
         return self._render_assistant_prefill(messages)
 
-    def _render_mapped_threshold_prompt(
+    def _render_numeric_calibration_prompt(
+        self,
+        field: NumericFieldSpec,
+        midpoint: int | float,
+        false_text: str,
+        true_text: str,
+    ) -> str:
+        description = f"\nField description: {field.description}" if field.description else ""
+        messages = [
+            {
+                "role": "system",
+                "content": "You estimate numeric values from context. Output only the requested boolean.",
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Context:\nNo information about the field value is available.\n\n"
+                    f"Field: {field.dotted_path}{description}\n"
+                    f"Allowed range: [{field.minimum}, {field.maximum}]\n"
+                    f"Calibration question: Is the value greater than or equal to {midpoint}?\n"
+                    "There is intentionally no evidence favoring either answer. "
+                    f"Treat {false_text} and {true_text} as equally plausible.\n"
+                    f"Return exactly {false_text} or {true_text}."
+                ),
+            },
+        ]
+        return self._render_assistant_prefill(messages)
+
+    def _render_threshold_prompt(
         self,
         prompt: str,
         field: NumericFieldSpec,
         threshold_value: int | float,
-        option_values: tuple[bool, bool],
+        false_text: str,
+        true_text: str,
     ) -> str:
         description = f"\nField description: {field.description}" if field.description else ""
-        mapping = "\n".join(
-            f"{label} = {'true' if value else 'false'}"
-            for label, value in zip(("A", "B"), option_values, strict=True)
-        )
         messages = [
             {
                 "role": "system",
-                "content": "You estimate numeric values from context. Output only A or B.",
+                "content": "You estimate numeric values from context. Output only the requested boolean.",
             },
             {
                 "role": "user",
@@ -485,8 +563,7 @@ class QwenSingleForwardSelector:
                     f"Allowed range: [{field.minimum}, {field.maximum}]\n"
                     f"Question: Is the best value for this field greater than or equal to "
                     f"{threshold_value}?\n"
-                    f"Answer mapping:\n{mapping}\n"
-                    "Return exactly A or B."
+                    f"Return exactly {false_text} or {true_text}."
                 ),
             },
         ]
@@ -532,15 +609,18 @@ def _candidate_output_text(value: Any) -> str | None:
     return None
 
 
-def _mean_log_odds_probability(first: float, second: float) -> float:
+def _subtract_log_odds_bias(
+    observed_probability: float,
+    prior_probability: float,
+) -> float:
     epsilon = 1e-6
-    p1 = min(1.0 - epsilon, max(epsilon, float(first)))
-    p2 = min(1.0 - epsilon, max(epsilon, float(second)))
-    logit = 0.5 * (
-        math.log(p1 / (1.0 - p1))
-        + math.log(p2 / (1.0 - p2))
+    observed = min(1.0 - epsilon, max(epsilon, float(observed_probability)))
+    prior = min(1.0 - epsilon, max(epsilon, float(prior_probability)))
+    corrected_logit = (
+        math.log(observed / (1.0 - observed))
+        - math.log(prior / (1.0 - prior))
     )
-    return 1.0 / (1.0 + math.exp(-logit))
+    return 1.0 / (1.0 + math.exp(-corrected_logit))
 
 
 def _isotonic_nonincreasing(values: list[float]) -> list[float]:

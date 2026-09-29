@@ -1,0 +1,59 @@
+name: autoselect-qwen35-smoke
+
+on:
+  push:
+    branches:
+      - autoselect-qwen35-smoke-20260930
+    paths:
+      - .github/workflows/autoselect-qwen35-smoke.yml
+
+jobs:
+  qwen35-cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HF_XET_HIGH_PERFORMANCE: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Create isolated uv environment
+        run: |
+          uv venv .venv
+          .venv/bin/python -V
+
+      - name: Install CPU inference stack
+        run: |
+          uv pip install --python .venv/bin/python             --index-url https://download.pytorch.org/whl/cpu             --extra-index-url https://pypi.org/simple             'torch==2.14.0+cpu'
+          uv pip install --python .venv/bin/python             'transformers==5.17.0'             'huggingface_hub[hf_xet]>=1.0'             'accelerate>=1.0'             'safetensors>=0.7'
+
+      - name: Download verified Qwen3.5-0.8B and run one forward
+        run: |
+          .venv/bin/python autoselect_qwen35_smoke.py 2>&1 | tee qwen-smoke.log
+
+      - name: Validate result
+        run: |
+          .venv/bin/python - <<'PY'
+          import json
+          x = json.load(open("qwen-smoke-result.json", encoding="utf-8"))
+          assert x["weights"]["verified"] is True
+          assert x["single_forward"]["forward_calls"] == 1
+          assert x["single_forward"]["generate_called"] is False
+          assert set(x["value"]) == {"danger_level", "run"}
+          print("VALIDATED", json.dumps(x["value"], ensure_ascii=False))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qwen35-0.8b-smoke-evidence
+          path: |
+            qwen-smoke-result.json
+            qwen-smoke.log
+          if-no-files-found: warn

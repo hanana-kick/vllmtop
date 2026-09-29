@@ -35,6 +35,8 @@ selector = QwenSingleForwardSelector(
     model_id=str(model_dir),
     dtype="bfloat16",
     numeric_thresholds=8,
+    numeric_strategy="anchors",
+    numeric_anchors=10,
 )
 
 cases = [
@@ -126,6 +128,8 @@ payload = {
     "revision": REVISION,
     "weights_sha256": sha256,
     "numeric_thresholds": 8,
+    "numeric_strategy": "anchors",
+    "numeric_anchors": 10,
     "cases": results,
     "total_seconds": time.perf_counter() - started,
 }

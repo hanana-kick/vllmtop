@@ -62,15 +62,23 @@ class QwenSingleForwardSelector:
         dtype: str = "bfloat16",
         max_candidates: int = 26,
         numeric_thresholds: int = 8,
+        numeric_strategy: str = "threshold",
+        numeric_anchors: int = 10,
         tokenizer: Any | None = None,
         model: Any | None = None,
     ) -> None:
         if numeric_thresholds < 2:
             raise ValueError("numeric_thresholds must be at least 2")
+        if numeric_strategy not in {"threshold", "anchors"}:
+            raise ValueError("numeric_strategy must be threshold or anchors")
+        if numeric_anchors < 2 or numeric_anchors > 10:
+            raise ValueError("numeric_anchors must be between 2 and 10")
 
         self.model_id = model_id
         self.max_candidates = max_candidates
         self.numeric_thresholds = numeric_thresholds
+        self.numeric_strategy = numeric_strategy
+        self.numeric_anchors = numeric_anchors
 
         if tokenizer is None:
             tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -105,6 +113,16 @@ class QwenSingleForwardSelector:
 
             if field.minimum == field.maximum:
                 fixed_values[field_index] = quantize_numeric(field, 0.0)
+                continue
+
+            if self.numeric_strategy == "anchors":
+                task = self._prepare_numeric_anchor_task(
+                    prompt,
+                    field_index,
+                    field,
+                )
+                rows_by_field[field_index].append(len(tasks))
+                tasks.append(task)
                 continue
 
             for normalized_threshold in self._normalized_thresholds():
@@ -201,6 +219,41 @@ class QwenSingleForwardSelector:
                                         strict=True,
                                     )
                                 )
+                            ],
+                        },
+                    )
+                )
+                continue
+
+            if len(rows) == 1 and tasks[rows[0]].method == "numeric-anchors":
+                row = rows[0]
+                task = tasks[row]
+                probabilities = task_probabilities[row]
+                winner = max(range(len(probabilities)), key=probabilities.__getitem__)
+                normalized_value = float(task.option_values[winner])
+                value = quantize_numeric(field, normalized_value)
+                selections.append((field, value))
+                details.append(
+                    FieldSelection(
+                        path=field.dotted_path,
+                        value=value,
+                        method="numeric-anchors",
+                        confidence=probabilities[winner],
+                        details={
+                            "minimum": field.minimum,
+                            "maximum": field.maximum,
+                            "multiple_of": field.multiple_of,
+                            "integer": field.integer,
+                            "normalized_value": normalized_value,
+                            "selected_anchor": task.option_texts[winner],
+                            "anchors": [
+                                {
+                                    "output": task.option_texts[i],
+                                    "normalized_value": task.option_values[i],
+                                    "probability": probabilities[i],
+                                    "token_id": task.token_ids[i],
+                                }
+                                for i in range(len(task.option_values))
                             ],
                         },
                     )
@@ -355,6 +408,49 @@ class QwenSingleForwardSelector:
             option_texts=labels,
         )
 
+    def _prepare_numeric_anchor_task(
+        self,
+        prompt: str,
+        field_index: int,
+        field: NumericFieldSpec,
+    ) -> _Task:
+        count = self.numeric_anchors
+        output_texts = tuple(str(index) for index in range(count))
+        normalized_values = tuple(
+            index / (count - 1)
+            for index in range(count)
+        )
+        rendered = self._render_numeric_anchor_prompt(
+            prompt,
+            field,
+            output_texts,
+        )
+        token_ids = tuple(
+            self._single_continuation_token_id(rendered, output)
+            for output in output_texts
+        )
+        if any(token_id is None for token_id in token_ids):
+            raise RuntimeError(
+                f"could not encode one-token numeric anchors for {field.dotted_path}"
+            )
+        resolved_ids = tuple(
+            int(token_id)
+            for token_id in token_ids
+            if token_id is not None
+        )
+        if len(set(resolved_ids)) != len(resolved_ids):
+            raise RuntimeError(
+                f"numeric anchors collide in tokenizer for {field.dotted_path}"
+            )
+        return _Task(
+            field_index=field_index,
+            method="numeric-anchors",
+            rendered_prompt=rendered,
+            token_ids=resolved_ids,
+            option_values=normalized_values,
+            option_texts=output_texts,
+        )
+
     def _prepare_threshold_task(
         self,
         prompt: str,
@@ -442,6 +538,39 @@ class QwenSingleForwardSelector:
         ]
         return self._render_assistant_prefill(messages)
 
+    def _render_numeric_anchor_prompt(
+        self,
+        prompt: str,
+        field: NumericFieldSpec,
+        output_texts: tuple[str, ...],
+    ) -> str:
+        description = f"\nField description: {field.description}" if field.description else ""
+        highest = len(output_texts) - 1
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Estimate one numeric JSON field as a position within its allowed range. "
+                    "Output only one digit."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Context:\n{prompt}\n\n"
+                    f"Field: {field.dotted_path}{description}\n"
+                    f"Allowed range: [{field.minimum}, {field.maximum}]\n"
+                    f"Choose exactly one digit from 0 through {highest}.\n"
+                    f"Digit d represents normalized position d/{highest}: "
+                    f"0 means the minimum and {highest} means the maximum.\n"
+                    "Choose the nearest position to the best field value. "
+                    "If the context explicitly states the numeric value, use it exactly.\n"
+                    "Return only the digit."
+                ),
+            },
+        ]
+        return self._render_assistant_prefill(messages)
+
     def _render_threshold_prompt(
         self,
         prompt: str,
@@ -454,13 +583,7 @@ class QwenSingleForwardSelector:
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "You perform a mathematical threshold test for one numeric JSON field. "
-                    "First identify the single best scalar value from the context, then compare "
-                    "that value with the threshold. If the context explicitly states the field's "
-                    "numeric value, use that exact number. Otherwise infer the value from meaning. "
-                    "Do not default toward the midpoint or endpoints. Output only the requested boolean."
-                ),
+                "content": "You estimate numeric values from context. Output only the requested boolean.",
             },
             {
                 "role": "user",
@@ -468,9 +591,8 @@ class QwenSingleForwardSelector:
                     f"Context:\n{prompt}\n\n"
                     f"Field: {field.dotted_path}{description}\n"
                     f"Allowed range: [{field.minimum}, {field.maximum}]\n"
-                    f"Threshold: {threshold_value}\n"
-                    "Decision rule: answer true iff the field value is numerically greater than "
-                    "or equal to the threshold; otherwise answer false.\n"
+                    f"Question: Is the best value for this field greater than or equal to "
+                    f"{threshold_value}?\n"
                     f"Return exactly {false_text} or {true_text}."
                 ),
             },

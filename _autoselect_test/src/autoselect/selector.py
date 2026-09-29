@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass
 from statistics import fmean
+import math
 from typing import Any
 
 import torch
@@ -51,7 +51,6 @@ class _Task:
     option_texts: tuple[str, ...]
     normalized_threshold: float | None = None
     threshold_value: int | float | None = None
-    threshold_relation: str | None = None
 
 
 class QwenSingleForwardSelector:
@@ -110,13 +109,13 @@ class QwenSingleForwardSelector:
                 continue
 
             for normalized_threshold in self._normalized_thresholds():
-                for relation in ("ge", "lt"):
-                    task = self._prepare_threshold_task(
+                for swap_mapping in (False, True):
+                    task = self._prepare_mapped_threshold_task(
                         prompt,
                         field_index,
                         field,
                         normalized_threshold,
-                        relation,
+                        swap_mapping=swap_mapping,
                     )
                     rows_by_field[field_index].append(len(tasks))
                     tasks.append(task)
@@ -214,38 +213,41 @@ class QwenSingleForwardSelector:
             raw_probabilities: list[float] = []
             threshold_details: list[dict[str, Any]] = []
             if len(rows) % 2 != 0:
-                raise RuntimeError(f"numeric field {field.dotted_path} has an unpaired threshold row")
+                raise RuntimeError(
+                    f"numeric field {field.dotted_path} has an unpaired mapping row"
+                )
 
             for offset in range(0, len(rows), 2):
-                ge_row = rows[offset]
-                lt_row = rows[offset + 1]
-                ge_task = tasks[ge_row]
-                lt_task = tasks[lt_row]
-                if (
-                    ge_task.threshold_relation != "ge"
-                    or lt_task.threshold_relation != "lt"
-                    or ge_task.normalized_threshold != lt_task.normalized_threshold
-                ):
+                normal_row = rows[offset]
+                swapped_row = rows[offset + 1]
+                normal_task = tasks[normal_row]
+                swapped_task = tasks[swapped_row]
+                if normal_task.normalized_threshold != swapped_task.normalized_threshold:
                     raise RuntimeError(
-                        f"numeric field {field.dotted_path} has invalid threshold pairing"
+                        f"numeric field {field.dotted_path} has mismatched threshold mappings"
                     )
 
-                ge_probabilities = task_probabilities[ge_row]
-                lt_probabilities = task_probabilities[lt_row]
-                ge_true = ge_probabilities[ge_task.option_values.index(True)]
-                lt_true = lt_probabilities[lt_task.option_values.index(True)]
-                probability_ge = _paired_complement_probability(ge_true, lt_true)
-                raw_probabilities.append(probability_ge)
+                normal_probs = task_probabilities[normal_row]
+                swapped_probs = task_probabilities[swapped_row]
+                normal_true = normal_probs[normal_task.option_values.index(True)]
+                swapped_true = swapped_probs[swapped_task.option_values.index(True)]
+                probability_true = _mean_log_odds_probability(
+                    normal_true,
+                    swapped_true,
+                )
+                raw_probabilities.append(probability_true)
                 threshold_details.append(
                     {
-                        "normalized_threshold": ge_task.normalized_threshold,
-                        "threshold": ge_task.threshold_value,
-                        "probability_ge_raw": ge_true,
-                        "probability_lt_raw": lt_true,
-                        "probability_ge_calibrated": probability_ge,
+                        "normalized_threshold": normal_task.normalized_threshold,
+                        "threshold": normal_task.threshold_value,
+                        "probability_ge": probability_true,
+                        "mapping_probabilities": {
+                            "A=false,B=true": normal_true,
+                            "A=true,B=false": swapped_true,
+                        },
                         "output_tokens": {
-                            ge_task.option_texts[i]: ge_task.token_ids[i]
-                            for i in range(len(ge_task.option_texts))
+                            "A": normal_task.token_ids[0],
+                            "B": normal_task.token_ids[1],
                         },
                     }
                 )
@@ -267,7 +269,7 @@ class QwenSingleForwardSelector:
                 FieldSelection(
                     path=field.dotted_path,
                     value=value,
-                    method="paired-normalized-thresholds",
+                    method="mapped-thresholds",
                     confidence=confidence,
                     details={
                         "minimum": field.minimum,
@@ -378,50 +380,40 @@ class QwenSingleForwardSelector:
             option_texts=labels,
         )
 
-    def _prepare_threshold_task(
+    def _prepare_mapped_threshold_task(
         self,
         prompt: str,
         field_index: int,
         field: NumericFieldSpec,
         normalized_threshold: float,
-        relation: str,
+        *,
+        swap_mapping: bool,
     ) -> _Task:
         threshold_value = numeric_threshold_value(field, normalized_threshold)
-
-        for false_text, true_text in (
-            ("false", "true"),
-            ("no", "yes"),
-            ("0", "1"),
-        ):
-            rendered = self._render_threshold_prompt(
-                prompt,
-                field,
-                threshold_value,
-                relation,
-                false_text,
-                true_text,
+        option_values = (True, False) if swap_mapping else (False, True)
+        rendered = self._render_mapped_threshold_prompt(
+            prompt,
+            field,
+            threshold_value,
+            option_values,
+        )
+        token_ids = tuple(
+            self._single_continuation_token_id(rendered, label)
+            for label in ("A", "B")
+        )
+        if any(token_id is None for token_id in token_ids):
+            raise RuntimeError(
+                f"could not encode A/B threshold labels for numeric field {field.dotted_path}"
             )
-            false_id = self._single_continuation_token_id(rendered, false_text)
-            true_id = self._single_continuation_token_id(rendered, true_text)
-            if (
-                false_id is not None
-                and true_id is not None
-                and false_id != true_id
-            ):
-                return _Task(
-                    field_index=field_index,
-                    method="normalized-threshold",
-                    rendered_prompt=rendered,
-                    token_ids=(false_id, true_id),
-                    option_values=(False, True),
-                    option_texts=(false_text, true_text),
-                    normalized_threshold=normalized_threshold,
-                    threshold_value=threshold_value,
-                    threshold_relation=relation,
-                )
-
-        raise RuntimeError(
-            f"could not find one-token boolean outputs for numeric field {field.dotted_path}"
+        return _Task(
+            field_index=field_index,
+            method="mapped-threshold",
+            rendered_prompt=rendered,
+            token_ids=tuple(int(token_id) for token_id in token_ids if token_id is not None),
+            option_values=option_values,
+            option_texts=("A", "B"),
+            normalized_threshold=normalized_threshold,
+            threshold_value=threshold_value,
         )
 
     def _render_choice_prompt(
@@ -468,28 +460,22 @@ class QwenSingleForwardSelector:
         ]
         return self._render_assistant_prefill(messages)
 
-    def _render_threshold_prompt(
+    def _render_mapped_threshold_prompt(
         self,
         prompt: str,
         field: NumericFieldSpec,
         threshold_value: int | float,
-        relation: str,
-        false_text: str,
-        true_text: str,
+        option_values: tuple[bool, bool],
     ) -> str:
         description = f"\nField description: {field.description}" if field.description else ""
-        if relation == "ge":
-            question = (
-                f"Is the best value for this field greater than or equal to {threshold_value}?"
-            )
-        elif relation == "lt":
-            question = f"Is the best value for this field strictly less than {threshold_value}?"
-        else:
-            raise ValueError(f"unsupported threshold relation: {relation}")
+        mapping = "\n".join(
+            f"{label} = {'true' if value else 'false'}"
+            for label, value in zip(("A", "B"), option_values, strict=True)
+        )
         messages = [
             {
                 "role": "system",
-                "content": "You estimate numeric values from context. Output only the requested boolean.",
+                "content": "You estimate numeric values from context. Output only A or B.",
             },
             {
                 "role": "user",
@@ -497,8 +483,10 @@ class QwenSingleForwardSelector:
                     f"Context:\n{prompt}\n\n"
                     f"Field: {field.dotted_path}{description}\n"
                     f"Allowed range: [{field.minimum}, {field.maximum}]\n"
-                    f"Question: {question}\n"
-                    f"Return exactly {false_text} or {true_text}."
+                    f"Question: Is the best value for this field greater than or equal to "
+                    f"{threshold_value}?\n"
+                    f"Answer mapping:\n{mapping}\n"
+                    "Return exactly A or B."
                 ),
             },
         ]
@@ -544,18 +532,15 @@ def _candidate_output_text(value: Any) -> str | None:
     return None
 
 
-def _paired_complement_probability(
-    probability_ge_true: float,
-    probability_lt_true: float,
-) -> float:
-    """Cancel a constant true/false token bias using complementary questions."""
+def _mean_log_odds_probability(first: float, second: float) -> float:
     epsilon = 1e-6
-    ge = min(1.0 - epsilon, max(epsilon, probability_ge_true))
-    lt = min(1.0 - epsilon, max(epsilon, probability_lt_true))
-    ge_log_odds = math.log(ge / (1.0 - ge))
-    lt_log_odds = math.log(lt / (1.0 - lt))
-    semantic_log_odds = 0.5 * (ge_log_odds - lt_log_odds)
-    return 1.0 / (1.0 + math.exp(-semantic_log_odds))
+    p1 = min(1.0 - epsilon, max(epsilon, float(first)))
+    p2 = min(1.0 - epsilon, max(epsilon, float(second)))
+    logit = 0.5 * (
+        math.log(p1 / (1.0 - p1))
+        + math.log(p2 / (1.0 - p2))
+    )
+    return 1.0 / (1.0 + math.exp(-logit))
 
 
 def _isotonic_nonincreasing(values: list[float]) -> list[float]:

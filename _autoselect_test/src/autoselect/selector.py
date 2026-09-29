@@ -488,6 +488,13 @@ class QwenSingleForwardSelector:
         full_ids = self.tokenizer.encode(rendered_prompt + text, add_special_tokens=False)
         if full_ids[: len(base_ids)] == base_ids and len(full_ids) == len(base_ids) + 1:
             return full_ids[-1]
+
+        # Next-token scoring operates on the already-tokenized prompt. A candidate
+        # does not need prompt+text to re-tokenize with an identical prefix; it only
+        # needs to exist as one vocabulary token that can be emitted next.
+        direct_ids = self.tokenizer.encode(text, add_special_tokens=False)
+        if len(direct_ids) == 1:
+            return direct_ids[0]
         return None
 
 

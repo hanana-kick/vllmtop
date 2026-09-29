@@ -16,6 +16,7 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
+      TEST_REVISION: "2"
     steps:
       - uses: actions/checkout@v4
 

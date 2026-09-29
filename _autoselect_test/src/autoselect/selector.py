@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from statistics import fmean
 from typing import Any
@@ -50,6 +51,7 @@ class _Task:
     option_texts: tuple[str, ...]
     normalized_threshold: float | None = None
     threshold_value: int | float | None = None
+    threshold_relation: str | None = None
 
 
 class QwenSingleForwardSelector:
@@ -108,14 +110,16 @@ class QwenSingleForwardSelector:
                 continue
 
             for normalized_threshold in self._normalized_thresholds():
-                task = self._prepare_threshold_task(
-                    prompt,
-                    field_index,
-                    field,
-                    normalized_threshold,
-                )
-                rows_by_field[field_index].append(len(tasks))
-                tasks.append(task)
+                for relation in ("ge", "lt"):
+                    task = self._prepare_threshold_task(
+                        prompt,
+                        field_index,
+                        field,
+                        normalized_threshold,
+                        relation,
+                    )
+                    rows_by_field[field_index].append(len(tasks))
+                    tasks.append(task)
 
         task_probabilities: list[list[float]] = []
         forward_calls = 0
@@ -209,20 +213,39 @@ class QwenSingleForwardSelector:
 
             raw_probabilities: list[float] = []
             threshold_details: list[dict[str, Any]] = []
-            for row in rows:
-                task = tasks[row]
-                probabilities = task_probabilities[row]
-                true_index = task.option_values.index(True)
-                probability_true = probabilities[true_index]
-                raw_probabilities.append(probability_true)
+            if len(rows) % 2 != 0:
+                raise RuntimeError(f"numeric field {field.dotted_path} has an unpaired threshold row")
+
+            for offset in range(0, len(rows), 2):
+                ge_row = rows[offset]
+                lt_row = rows[offset + 1]
+                ge_task = tasks[ge_row]
+                lt_task = tasks[lt_row]
+                if (
+                    ge_task.threshold_relation != "ge"
+                    or lt_task.threshold_relation != "lt"
+                    or ge_task.normalized_threshold != lt_task.normalized_threshold
+                ):
+                    raise RuntimeError(
+                        f"numeric field {field.dotted_path} has invalid threshold pairing"
+                    )
+
+                ge_probabilities = task_probabilities[ge_row]
+                lt_probabilities = task_probabilities[lt_row]
+                ge_true = ge_probabilities[ge_task.option_values.index(True)]
+                lt_true = lt_probabilities[lt_task.option_values.index(True)]
+                probability_ge = _paired_complement_probability(ge_true, lt_true)
+                raw_probabilities.append(probability_ge)
                 threshold_details.append(
                     {
-                        "normalized_threshold": task.normalized_threshold,
-                        "threshold": task.threshold_value,
-                        "probability_ge": probability_true,
+                        "normalized_threshold": ge_task.normalized_threshold,
+                        "threshold": ge_task.threshold_value,
+                        "probability_ge_raw": ge_true,
+                        "probability_lt_raw": lt_true,
+                        "probability_ge_calibrated": probability_ge,
                         "output_tokens": {
-                            task.option_texts[i]: task.token_ids[i]
-                            for i in range(len(task.option_texts))
+                            ge_task.option_texts[i]: ge_task.token_ids[i]
+                            for i in range(len(ge_task.option_texts))
                         },
                     }
                 )
@@ -244,7 +267,7 @@ class QwenSingleForwardSelector:
                 FieldSelection(
                     path=field.dotted_path,
                     value=value,
-                    method="normalized-thresholds",
+                    method="paired-normalized-thresholds",
                     confidence=confidence,
                     details={
                         "minimum": field.minimum,
@@ -361,6 +384,7 @@ class QwenSingleForwardSelector:
         field_index: int,
         field: NumericFieldSpec,
         normalized_threshold: float,
+        relation: str,
     ) -> _Task:
         threshold_value = numeric_threshold_value(field, normalized_threshold)
 
@@ -373,6 +397,7 @@ class QwenSingleForwardSelector:
                 prompt,
                 field,
                 threshold_value,
+                relation,
                 false_text,
                 true_text,
             )
@@ -392,6 +417,7 @@ class QwenSingleForwardSelector:
                     option_texts=(false_text, true_text),
                     normalized_threshold=normalized_threshold,
                     threshold_value=threshold_value,
+                    threshold_relation=relation,
                 )
 
         raise RuntimeError(
@@ -447,10 +473,19 @@ class QwenSingleForwardSelector:
         prompt: str,
         field: NumericFieldSpec,
         threshold_value: int | float,
+        relation: str,
         false_text: str,
         true_text: str,
     ) -> str:
         description = f"\nField description: {field.description}" if field.description else ""
+        if relation == "ge":
+            question = (
+                f"Is the best value for this field greater than or equal to {threshold_value}?"
+            )
+        elif relation == "lt":
+            question = f"Is the best value for this field strictly less than {threshold_value}?"
+        else:
+            raise ValueError(f"unsupported threshold relation: {relation}")
         messages = [
             {
                 "role": "system",
@@ -462,8 +497,7 @@ class QwenSingleForwardSelector:
                     f"Context:\n{prompt}\n\n"
                     f"Field: {field.dotted_path}{description}\n"
                     f"Allowed range: [{field.minimum}, {field.maximum}]\n"
-                    f"Question: Is the best value for this field greater than or equal to "
-                    f"{threshold_value}?\n"
+                    f"Question: {question}\n"
                     f"Return exactly {false_text} or {true_text}."
                 ),
             },
@@ -508,6 +542,20 @@ def _candidate_output_text(value: Any) -> str | None:
     if isinstance(value, (int, float)):
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     return None
+
+
+def _paired_complement_probability(
+    probability_ge_true: float,
+    probability_lt_true: float,
+) -> float:
+    """Cancel a constant true/false token bias using complementary questions."""
+    epsilon = 1e-6
+    ge = min(1.0 - epsilon, max(epsilon, probability_ge_true))
+    lt = min(1.0 - epsilon, max(epsilon, probability_lt_true))
+    ge_log_odds = math.log(ge / (1.0 - ge))
+    lt_log_odds = math.log(lt / (1.0 - lt))
+    semantic_log_odds = 0.5 * (ge_log_odds - lt_log_odds)
+    return 1.0 / (1.0 + math.exp(-semantic_log_odds))
 
 
 def _isotonic_nonincreasing(values: list[float]) -> list[float]:

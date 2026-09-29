@@ -448,7 +448,7 @@ class QwenSingleForwardSelector:
             add_generation_prompt=True,
             enable_thinking=False,
         )
-        return rendered + "Answer: "
+        return rendered + "Answer:"
 
     def _single_continuation_token_id(
         self,

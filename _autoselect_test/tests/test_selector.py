@@ -6,7 +6,6 @@ import torch
 from autoselect.selector import (
     QwenSingleForwardSelector,
     _isotonic_nonincreasing,
-    _subtract_log_odds_bias,
 )
 
 
@@ -108,22 +107,10 @@ class FakeModel:
         return SimpleNamespace(logits=logits)
 
 
-def _apply_logit_bias(probability: float, bias: float) -> float:
-    semantic_logit = torch.logit(torch.tensor(probability)).item()
-    return torch.sigmoid(torch.tensor(semantic_logit + bias)).item()
-
-
 def test_dynamic_number_and_boolean_share_one_forward() -> None:
-    semantic_thresholds = [0.9, 0.8, 0.7, 0.6]
-    bias = 1.0
-    observed_thresholds = [
-        _apply_logit_bias(probability, bias)
-        for probability in semantic_thresholds
-    ]
-    calibration_prior = torch.sigmoid(torch.tensor(bias)).item()
-
-    # 4 threshold rows + 1 content-free calibration row + 1 boolean row.
-    model = FakeModel(observed_thresholds + [calibration_prior, 0.95])
+    # Four threshold rows estimate u=(.9+.8+.7+.6)/4=.75 => -20 + .75*100 = 55.
+    # The final row is the boolean field and strongly favors true.
+    model = FakeModel([0.9, 0.8, 0.7, 0.6, 0.95])
     selector = QwenSingleForwardSelector(
         tokenizer=FakeTokenizer(),
         model=model,
@@ -146,25 +133,17 @@ def test_dynamic_number_and_boolean_share_one_forward() -> None:
     )
 
     assert model.calls == 1
-    assert model.last_batch_size == 6
+    assert model.last_batch_size == 5
     assert result.forward_calls == 1
-    assert result.batch_size == 6
-    assert result.value["temperature"] == pytest.approx(55.0, abs=1e-5)
+    assert result.batch_size == 5
+    assert result.value["temperature"] == pytest.approx(55.0)
     assert result.value["run"] is True
-    assert result.fields[0].method == "calibrated-thresholds"
+    assert result.fields[0].method == "normalized-thresholds"
     assert result.fields[1].method == "direct-choice"
 
 
-def test_large_integer_range_uses_thresholds_plus_one_calibration_row() -> None:
-    semantic_thresholds = [0.9, 0.8, 0.7, 0.6]
-    bias = 0.75
-    observed_thresholds = [
-        _apply_logit_bias(probability, bias)
-        for probability in semantic_thresholds
-    ]
-    calibration_prior = torch.sigmoid(torch.tensor(bias)).item()
-
-    model = FakeModel(observed_thresholds + [calibration_prior])
+def test_large_integer_range_uses_fixed_threshold_batch_size() -> None:
+    model = FakeModel([0.9, 0.8, 0.7, 0.6])
     selector = QwenSingleForwardSelector(
         tokenizer=FakeTokenizer(),
         model=model,
@@ -186,18 +165,8 @@ def test_large_integer_range_uses_thresholds_plus_one_calibration_row() -> None:
     )
 
     assert model.calls == 1
-    assert result.batch_size == 5
+    assert result.batch_size == 4
     assert result.value["score"] == 37750
-
-
-def test_content_free_calibration_removes_constant_logit_bias() -> None:
-    semantic_probability = 0.7
-    bias = 1.25
-    observed = _apply_logit_bias(semantic_probability, bias)
-    prior = torch.sigmoid(torch.tensor(bias)).item()
-
-    calibrated = _subtract_log_odds_bias(observed, prior)
-    assert calibrated == pytest.approx(semantic_probability, abs=1e-6)
 
 
 def test_isotonic_probability_repair() -> None:

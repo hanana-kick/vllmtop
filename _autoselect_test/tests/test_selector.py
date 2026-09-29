@@ -115,6 +115,7 @@ def test_dynamic_number_and_boolean_share_one_forward() -> None:
         tokenizer=FakeTokenizer(),
         model=model,
         numeric_thresholds=4,
+        numeric_literal_fastpath=False,
     )
 
     result = selector.select(

@@ -31,29 +31,35 @@ jobs:
       - name: Install CPU inference stack
         run: |
           uv pip install --python .venv/bin/python             --index-strategy unsafe-best-match             --index-url https://download.pytorch.org/whl/cpu             --extra-index-url https://pypi.org/simple             'torch==2.14.0+cpu'
-          uv pip install --python .venv/bin/python             'transformers==5.17.0'             'huggingface_hub[hf_xet]>=1.0'             'accelerate>=1.0'             'safetensors>=0.7'
+          uv pip install --python .venv/bin/python             'transformers==5.17.0'             'huggingface_hub[hf_xet]>=1.0'             'accelerate>=1.0'             'safetensors>=0.7'             'pytest>=8.4'
 
-      - name: Download verified Qwen3.5-0.8B and run one forward
+      - name: Run mirrored autoselect unit tests
         run: |
-          .venv/bin/python autoselect_qwen35_smoke.py 2>&1 | tee qwen-smoke.log
+          PYTHONPATH=_autoselect_test/src .venv/bin/python -m pytest _autoselect_test/tests -q
 
-      - name: Validate result
+      - name: Run real Qwen dynamic-threshold integration
+        run: |
+          .venv/bin/python _autoselect_test/integration.py 2>&1 | tee dynamic-threshold.log
+
+      - name: Validate structural guarantees
         run: |
           .venv/bin/python - <<'PY'
           import json
-          x = json.load(open("qwen-smoke-result.json", encoding="utf-8"))
-          assert x["weights"]["verified"] is True
-          assert x["single_forward"]["forward_calls"] == 1
-          assert x["single_forward"]["generate_called"] is False
-          assert set(x["value"]) == {"danger_level", "run"}
-          print("VALIDATED", json.dumps(x["value"], ensure_ascii=False))
+          x = json.load(open("dynamic-threshold-result.json", encoding="utf-8"))
+          assert x["weights_sha256"] == "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696"
+          assert len(x["cases"]) == 3
+          assert all(case["forward_calls"] == 1 for case in x["cases"])
+          assert x["cases"][0]["batch_size"] == 8
+          assert x["cases"][1]["batch_size"] == 8
+          assert x["cases"][2]["batch_size"] == 9
+          print(json.dumps([case["value"] for case in x["cases"]], ensure_ascii=False))
           PY
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: qwen35-0.8b-smoke-evidence
+          name: autoselect-dynamic-threshold-evidence
           path: |
-            qwen-smoke-result.json
-            qwen-smoke.log
+            dynamic-threshold-result.json
+            dynamic-threshold.log
           if-no-files-found: warn

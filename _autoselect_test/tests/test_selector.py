@@ -6,7 +6,9 @@ import torch
 from autoselect.selector import (
     QwenSingleForwardSelector,
     _isotonic_nonincreasing,
+    _literal_candidate_set,
     _mean_log_odds_probability,
+    _numeric_literal_candidates,
 )
 
 
@@ -140,7 +142,7 @@ def test_dynamic_number_and_boolean_share_one_forward() -> None:
     )
 
     result = selector.select(
-        "The measured temperature is 55 C. Run is required.",
+        "The temperature is about three quarters of the allowed range. Run is required.",
         {
             "type": "object",
             "properties": {
@@ -233,3 +235,56 @@ def test_multitoken_enum_falls_back_to_surrogate_labels() -> None:
     assert model.calls == 1
     assert result.fields[0].method == "surrogate-labels"
     assert result.value["action"] == "hide now"
+
+
+def test_numeric_literal_extraction_filters_range_and_grid() -> None:
+    from autoselect.schema import compile_schema
+
+    fields = compile_schema(
+        {
+            "type": "object",
+            "properties": {
+                "score": {
+                    "type": "integer",
+                    "minimum": 1000,
+                    "maximum": 50000,
+                }
+            },
+        }
+    )
+    field = fields[0]
+    literals = _numeric_literal_candidates(
+        "previous=30000, current=37750, ratio=0.5, invalid=60000",
+        field,
+        max_literals=5,
+    )
+    assert literals == [(30000, "30000"), (37750, "37750")]
+
+
+def test_literal_candidate_set_adds_three_anchors_without_duplicates() -> None:
+    from autoselect.schema import compile_schema
+
+    fields = compile_schema(
+        {
+            "type": "object",
+            "properties": {
+                "temperature": {
+                    "type": "number",
+                    "minimum": -20,
+                    "maximum": 80,
+                }
+            },
+        }
+    )
+    field = fields[0]
+    candidates = _literal_candidate_set(
+        field,
+        [(55.0, "55"), (40.0, "40")],
+    )
+    assert candidates == [
+        (55.0, "55", "literal"),
+        (40.0, "40", "literal"),
+        (-20, "-20", "anchor"),
+        (30, "30", "anchor"),
+        (80, "80", "anchor"),
+    ]

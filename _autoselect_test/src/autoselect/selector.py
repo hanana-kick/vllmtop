@@ -137,11 +137,17 @@ class QwenSingleForwardSelector:
                 add_special_tokens=False,
             )
             encoded = {key: value.to("cpu") for key, value in encoded.items()}
+            attention_mask = encoded.get("attention_mask")
+            if attention_mask is None:
+                raise RuntimeError("tokenizer did not return attention_mask")
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 0)
 
             with torch.inference_mode():
                 forward_calls = 1
                 outputs = self.model(
                     **encoded,
+                    position_ids=position_ids,
                     use_cache=False,
                     logits_to_keep=1,
                 )

@@ -76,23 +76,15 @@ class QwenSingleForwardSelector:
         self.numeric_thresholds = numeric_thresholds
         self.numeric_literal_fastpath = numeric_literal_fastpath
 
-        if tokenizer is None:
-            tokenizer = AutoTokenizer.from_pretrained(model_id)
+        self._dtype_name = dtype
         self.tokenizer = tokenizer
-        self.tokenizer.padding_side = "left"
-        if self.tokenizer.pad_token_id is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-
-        if model is None:
-            torch_dtype = _resolve_dtype(dtype)
-            model = AutoModelForCausalLM.from_pretrained(
-                model_id,
-                dtype=torch_dtype,
-                low_cpu_mem_usage=True,
-            )
         self.model = model
-        self.model.to("cpu")
-        self.model.eval()
+
+        if self.tokenizer is not None:
+            self._configure_tokenizer()
+        if self.model is not None:
+            self.model.to("cpu")
+            self.model.eval()
 
     def select(self, prompt: str, schema: dict[str, Any]) -> SelectionResult:
         fields = compile_schema(schema, max_candidates=self.max_candidates)
@@ -106,6 +98,18 @@ class QwenSingleForwardSelector:
             if self.numeric_literal_fastpath
             else {}
         )
+
+        needs_runtime = any(
+            isinstance(field, ChoiceFieldSpec)
+            or (
+                isinstance(field, NumericFieldSpec)
+                and field_index not in literal_values
+                and field.minimum != field.maximum
+            )
+            for field_index, field in enumerate(fields)
+        )
+        if needs_runtime:
+            self._ensure_runtime()
 
         for field_index, field in enumerate(fields):
             if isinstance(field, ChoiceFieldSpec):
@@ -283,6 +287,28 @@ class QwenSingleForwardSelector:
             forward_calls=forward_calls,
             batch_size=len(tasks),
         )
+
+    def _configure_tokenizer(self) -> None:
+        if self.tokenizer is None:
+            raise RuntimeError("tokenizer is not loaded")
+        self.tokenizer.padding_side = "left"
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+    def _ensure_runtime(self) -> None:
+        if self.tokenizer is None:
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
+            self._configure_tokenizer()
+
+        if self.model is None:
+            torch_dtype = _resolve_dtype(self._dtype_name)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_id,
+                dtype=torch_dtype,
+                low_cpu_mem_usage=True,
+            )
+            self.model.to("cpu")
+            self.model.eval()
 
     def _normalized_thresholds(self) -> list[float]:
         count = self.numeric_thresholds

@@ -8,7 +8,7 @@ on:
       - .github/workflows/autoselect-qwen35-smoke.yml
 
 jobs:
-  direct-percent-benchmark:
+  digit-regression-benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -16,7 +16,7 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
-      TEST_REVISION: "direct-percent-1"
+      TEST_REVISION: "digit-regression-1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -35,14 +35,16 @@ jobs:
             'huggingface_hub[hf_xet]>=1.0' \
             'accelerate>=1.0' \
             'safetensors>=0.7'
-      - name: Benchmark direct normalized numeric tokens
+      - name: Benchmark digit-wise normalized regression
+        shell: bash
         run: |
-          .venv/bin/python _autoselect_test/direct_percent_benchmark.py 2>&1 | tee direct-percent.log
+          set -o pipefail
+          .venv/bin/python _autoselect_test/digit_regression_benchmark.py 2>&1 | tee digit-regression.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: direct-percent-benchmark
+          name: digit-regression-benchmark
           path: |
-            direct-percent-benchmark.json
-            direct-percent.log
+            digit-regression-benchmark.json
+            digit-regression.log
           if-no-files-found: warn

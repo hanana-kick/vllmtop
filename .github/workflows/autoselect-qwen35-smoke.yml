@@ -8,7 +8,7 @@ on:
       - .github/workflows/autoselect-qwen35-smoke.yml
 
 jobs:
-  bucket-regression-benchmark:
+  sequence-scoring-benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -16,7 +16,7 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
-      TEST_REVISION: "bucket-regression-1"
+      TEST_REVISION: "sequence-scoring-1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -35,16 +35,16 @@ jobs:
             'huggingface_hub[hf_xet]>=1.0' \
             'accelerate>=1.0' \
             'safetensors>=0.7'
-      - name: Benchmark ten-bucket dynamic range regression
+      - name: Benchmark teacher-forced numeric sequence scoring
         shell: bash
         run: |
           set -o pipefail
-          .venv/bin/python _autoselect_test/bucket_regression_benchmark.py 2>&1 | tee bucket-regression.log
+          .venv/bin/python _autoselect_test/sequence_scoring_benchmark.py 2>&1 | tee sequence-scoring.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: bucket-regression-benchmark
+          name: sequence-scoring-benchmark
           path: |
-            bucket-regression-benchmark.json
-            bucket-regression.log
+            sequence-scoring-benchmark.json
+            sequence-scoring.log
           if-no-files-found: warn

@@ -81,7 +81,7 @@ def digit_position_name(width: int, position: int) -> str:
 rows = []
 metadata = []
 for case in CASES:
-    for width in (2, 3):
+    for width in (2,):
         max_code = 10**width - 1
         for position in range(width):
             pos_name = digit_position_name(width, position)

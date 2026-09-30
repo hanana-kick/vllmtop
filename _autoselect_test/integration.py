@@ -17,11 +17,10 @@ REVISION = "dc255159ae75b03b99200cd37a2d42ddc42b24d6"
 WEIGHT = "model.safetensors-00001-of-00001.safetensors"
 EXPECTED_SHA256 = "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696"
 
-started = time.perf_counter()
 model_dir = Path(snapshot_download(
     repo_id=MODEL_ID,
     revision=REVISION,
-    local_dir="qwen3.5-0.8b-threshold-test",
+    local_dir="qwen3.5-0.8b-hybrid-test",
 ))
 
 h = hashlib.sha256()
@@ -35,12 +34,13 @@ selector = QwenSingleForwardSelector(
     model_id=str(model_dir),
     dtype="bfloat16",
     numeric_thresholds=4,
+    literal_margin=0.5,
 )
 
 cases = [
     {
-        "name": "dynamic_temperature",
-        "prompt": "The measured temperature is exactly 55 degrees Celsius.",
+        "name": "temperature_with_distractor",
+        "prompt": "The measured temperature is exactly 55 degrees Celsius. The humidity index is 40.",
         "schema": {
             "type": "object",
             "properties": {
@@ -52,11 +52,11 @@ cases = [
                 }
             },
         },
-        "expected": {"temperature": 55.0},
+        "expected": 55.0,
     },
     {
-        "name": "dynamic_large_integer",
-        "prompt": "The current score is exactly 37750.",
+        "name": "score_with_previous_value",
+        "prompt": "The previous score was 30000. The current score is exactly 37750.",
         "schema": {
             "type": "object",
             "properties": {
@@ -68,7 +68,7 @@ cases = [
                 }
             },
         },
-        "expected": {"score": 37750},
+        "expected": 37750,
     },
     {
         "name": "danger_and_boolean",
@@ -88,15 +88,15 @@ cases = [
                 },
             },
         },
-        "expected": {"run": True},
+        "expected": None,
     },
 ]
 
 results = []
 for case in cases:
-    case_started = time.perf_counter()
+    started = time.perf_counter()
     result = selector.select(case["prompt"], case["schema"])
-    elapsed = time.perf_counter() - case_started
+    elapsed = time.perf_counter() - started
     assert result.forward_calls == 1
     entry = {
         "name": case["name"],
@@ -115,21 +115,25 @@ for case in cases:
             for field in result.fields
         ],
     }
-    if case["name"] == "dynamic_temperature":
-        entry["absolute_error"] = abs(result.value["temperature"] - 55.0)
-    if case["name"] == "dynamic_large_integer":
-        entry["absolute_error"] = abs(result.value["score"] - 37750)
+    if case["expected"] is not None:
+        key = next(iter(result.value))
+        entry["absolute_error"] = abs(float(result.value[key]) - float(case["expected"]))
     results.append(entry)
+
+assert results[0]["value"]["temperature"] == 55.0
+assert results[0]["fields"][0]["method"] == "literal-sequence"
+assert results[1]["value"]["score"] == 37750
+assert results[1]["fields"][0]["method"] == "literal-sequence"
+assert results[2]["fields"][0]["method"] == "label-swap-thresholds"
+assert results[2]["value"]["run"] is True
 
 payload = {
     "model_id": MODEL_ID,
     "revision": REVISION,
     "weights_sha256": sha256,
-    "numeric_thresholds": 4,
     "cases": results,
-    "total_seconds": time.perf_counter() - started,
 }
-Path("dynamic-threshold-result.json").write_text(
+Path("hybrid-result.json").write_text(
     json.dumps(payload, ensure_ascii=False, indent=2),
     encoding="utf-8",
 )

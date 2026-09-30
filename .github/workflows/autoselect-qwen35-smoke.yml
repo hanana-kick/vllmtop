@@ -8,7 +8,7 @@ on:
       - .github/workflows/autoselect-qwen35-smoke.yml
 
 jobs:
-  digit-regression-benchmark:
+  bias-calibration-benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -16,7 +16,7 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
-      TEST_REVISION: "digit-regression-2digit"
+      TEST_REVISION: "bias-calibration-1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -35,16 +35,16 @@ jobs:
             'huggingface_hub[hf_xet]>=1.0' \
             'accelerate>=1.0' \
             'safetensors>=0.7'
-      - name: Benchmark digit-wise normalized regression
+      - name: Benchmark one-row token bias calibration
         shell: bash
         run: |
           set -o pipefail
-          .venv/bin/python _autoselect_test/digit_regression_benchmark.py 2>&1 | tee digit-regression.log
+          .venv/bin/python _autoselect_test/bias_calibration_benchmark.py 2>&1 | tee bias-calibration.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: digit-regression-benchmark
+          name: bias-calibration-benchmark
           path: |
-            digit-regression-benchmark.json
-            digit-regression.log
+            bias-calibration-benchmark.json
+            bias-calibration.log
           if-no-files-found: warn

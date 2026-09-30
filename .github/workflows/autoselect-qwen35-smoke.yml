@@ -8,7 +8,7 @@ on:
       - .github/workflows/autoselect-qwen35-smoke.yml
 
 jobs:
-  anchor-calibration-benchmark:
+  packed-probe-benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -16,7 +16,7 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
-      TEST_REVISION: "anchor-calibration-1"
+      TEST_REVISION: "packed-probe-1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -35,16 +35,16 @@ jobs:
             'huggingface_hub[hf_xet]>=1.0' \
             'accelerate>=1.0' \
             'safetensors>=0.7'
-      - name: Benchmark schema-bound anchor calibration
+      - name: Benchmark packed multi-position threshold probing
         shell: bash
         run: |
           set -o pipefail
-          .venv/bin/python _autoselect_test/anchor_calibration_benchmark.py 2>&1 | tee anchor-calibration.log
+          .venv/bin/python _autoselect_test/packed_probe_benchmark.py 2>&1 | tee packed-probe.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: anchor-calibration-benchmark
+          name: packed-probe-benchmark
           path: |
-            anchor-calibration-benchmark.json
-            anchor-calibration.log
+            packed-probe-benchmark.json
+            packed-probe.log
           if-no-files-found: warn

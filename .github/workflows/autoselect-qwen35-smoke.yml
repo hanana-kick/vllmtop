@@ -8,7 +8,7 @@ on:
       - .github/workflows/autoselect-qwen35-smoke.yml
 
 jobs:
-  token-pair-benchmark:
+  anchor-calibration-benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -16,7 +16,7 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
-      TEST_REVISION: "token-pair-1"
+      TEST_REVISION: "anchor-calibration-1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -35,16 +35,16 @@ jobs:
             'huggingface_hub[hf_xet]>=1.0' \
             'accelerate>=1.0' \
             'safetensors>=0.7'
-      - name: Benchmark semantic threshold token pairs
+      - name: Benchmark schema-bound anchor calibration
         shell: bash
         run: |
           set -o pipefail
-          .venv/bin/python _autoselect_test/token_pair_benchmark.py 2>&1 | tee token-pair.log
+          .venv/bin/python _autoselect_test/anchor_calibration_benchmark.py 2>&1 | tee anchor-calibration.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: token-pair-benchmark
+          name: anchor-calibration-benchmark
           path: |
-            token-pair-benchmark.json
-            token-pair.log
+            anchor-calibration-benchmark.json
+            anchor-calibration.log
           if-no-files-found: warn

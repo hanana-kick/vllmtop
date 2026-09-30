@@ -1,4 +1,4 @@
-name: autoselect-global-calibration-positionids
+name: autoselect-prompt-variant-experiment
 on:
   push:
     branches: [autoselect-qwen35-smoke-20260930]
@@ -18,15 +18,12 @@ jobs:
       - run: uv venv .venv
       - run: |
           uv pip install --python .venv/bin/python --index-strategy unsafe-best-match --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch==2.14.0+cpu'
-          uv pip install --python .venv/bin/python 'transformers==5.17.0' 'huggingface_hub[hf_xet]>=1.0' 'accelerate>=1.0' 'safetensors>=0.7' 'pytest>=8.4'
-      - name: Unit tests
-        run: PYTHONPATH=_autoselect_test/src .venv/bin/python -m pytest _autoselect_test/tests -q
-      - name: Real Qwen integration
-        run: .venv/bin/python _autoselect_test/global_calibration_integration.py | tee global-calibration.log
+          uv pip install --python .venv/bin/python 'transformers==5.17.0' 'huggingface_hub[hf_xet]>=1.0' 'accelerate>=1.0' 'safetensors>=0.7'
+      - run: .venv/bin/python prompt_variant_experiment.py | tee prompt-variant.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: global-calibration-production-evidence
+          name: prompt-variant-evidence
           path: |
-            global-calibration-result.json
-            global-calibration.log
+            prompt-variant-result.json
+            prompt-variant.log

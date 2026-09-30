@@ -88,12 +88,15 @@ class FakeModel:
         *,
         input_ids,
         attention_mask,
+        position_ids,
         use_cache,
         logits_to_keep,
     ):
         self.calls += 1
         self.last_batch_size = int(input_ids.shape[0])
         assert attention_mask.shape == input_ids.shape
+        assert position_ids.shape == input_ids.shape
+        assert torch.all(position_ids[:, 0] == 0)
         assert use_cache is False
         assert logits_to_keep == 1
 
@@ -221,7 +224,7 @@ def test_isotonic_probability_repair() -> None:
 
 def test_multitoken_enum_falls_back_to_surrogate_labels() -> None:
     class EnumModel(FakeModel):
-        def __call__(self, *, input_ids, attention_mask, use_cache, logits_to_keep):
+        def __call__(self, *, input_ids, attention_mask, position_ids, use_cache, logits_to_keep):
             self.calls += 1
             logits = torch.full((input_ids.shape[0], 1, 128), -20.0)
             logits[:, :, 12] = 0.0

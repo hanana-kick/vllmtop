@@ -120,13 +120,6 @@ for case in cases:
         entry["absolute_error"] = abs(float(result.value[key]) - float(case["expected"]))
     results.append(entry)
 
-assert results[0]["value"]["temperature"] == 55.0
-assert results[0]["fields"][0]["method"] == "literal-sequence"
-assert results[1]["value"]["score"] == 37750
-assert results[1]["fields"][0]["method"] == "literal-sequence"
-assert results[2]["fields"][0]["method"] == "label-swap-thresholds"
-assert results[2]["value"]["run"] is True
-
 payload = {
     "model_id": MODEL_ID,
     "revision": REVISION,

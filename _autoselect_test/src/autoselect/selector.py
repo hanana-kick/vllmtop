@@ -573,8 +573,11 @@ def _unique_numeric_literal_assignment(
         return {}
 
     accepted: list[tuple[int, int | float]] = []
+    literal_start = next(_NUMBER_LITERAL_RE.finditer(prompt)).start()
     for index, field in enumerate(fields):
         if not isinstance(field, NumericFieldSpec):
+            continue
+        if not _field_name_is_explicit_near_literal(prompt, field, literal_start):
             continue
         coerced = _coerce_literal_for_numeric_field(field, value)
         if coerced is not None:
@@ -584,6 +587,37 @@ def _unique_numeric_literal_assignment(
         return {}
     index, coerced = accepted[0]
     return {index: coerced}
+
+
+def _field_name_is_explicit_near_literal(
+    prompt: str,
+    field: NumericFieldSpec,
+    literal_start: int,
+) -> bool:
+    """Require an explicit field-name cue close to the sole numeric literal."""
+    leaf_name = field.path[-1].strip()
+    if not leaf_name:
+        return False
+
+    # Match the full identifier and a humanized snake/kebab-case form.
+    variants = {
+        leaf_name.casefold(),
+        leaf_name.replace("_", " ").replace("-", " ").casefold(),
+    }
+    variants = {variant for variant in variants if len(variant) >= 3}
+    if not variants:
+        return False
+
+    folded = prompt.casefold()
+    window_start = max(0, literal_start - 96)
+    window_end = min(len(prompt), literal_start + 96)
+    window = folded[window_start:window_end]
+
+    for variant in variants:
+        pattern = re.escape(variant).replace(r"\ ", r"\s+")
+        if re.search(rf"(?<!\w){pattern}(?!\w)", window):
+            return True
+    return False
 
 
 def _coerce_literal_for_numeric_field(

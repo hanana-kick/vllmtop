@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass
 from statistics import fmean
 from typing import Any
@@ -22,6 +23,7 @@ from .schema import (
 
 MODEL_ID = "Qwen/Qwen3.5-0.8B"
 _LABELS = tuple(chr(ord("A") + i) for i in range(26))
+_NUMBER_RE = re.compile(r"(?<![\w.])[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
 
 
 @dataclass(frozen=True)
@@ -45,13 +47,16 @@ class SelectionResult:
 class _Task:
     field_index: int
     method: str
-    rendered_prompt: str
-    token_ids: tuple[int, ...]
-    option_values: tuple[Any, ...]
-    option_texts: tuple[str, ...]
+    input_text: str
+    token_ids: tuple[int, ...] = ()
+    option_values: tuple[Any, ...] = ()
+    option_texts: tuple[str, ...] = ()
     normalized_threshold: float | None = None
     threshold_value: int | float | None = None
     calibration_role: str | None = None
+    sequence_candidate: int | float | None = None
+    sequence_source: str | None = None
+    sequence_target_ids: tuple[int, ...] = ()
 
 
 class QwenSingleForwardSelector:
@@ -64,15 +69,23 @@ class QwenSingleForwardSelector:
         dtype: str = "bfloat16",
         max_candidates: int = 26,
         numeric_thresholds: int = 4,
+        literal_margin: float = 0.5,
+        max_numeric_literals: int = 5,
         tokenizer: Any | None = None,
         model: Any | None = None,
     ) -> None:
         if numeric_thresholds < 2:
             raise ValueError("numeric_thresholds must be at least 2")
+        if literal_margin < 0:
+            raise ValueError("literal_margin must be non-negative")
+        if max_numeric_literals < 1:
+            raise ValueError("max_numeric_literals must be at least 1")
 
         self.model_id = model_id
         self.max_candidates = max_candidates
         self.numeric_thresholds = numeric_thresholds
+        self.literal_margin = literal_margin
+        self.max_numeric_literals = max_numeric_literals
 
         if tokenizer is None:
             tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -121,12 +134,41 @@ class QwenSingleForwardSelector:
                     rows_by_field[field_index].append(len(tasks))
                     tasks.append(task)
 
-        task_probabilities: list[list[float]] = []
+            literal_candidates = _numeric_literal_candidates(
+                prompt,
+                field,
+                max_literals=self.max_numeric_literals,
+            )
+            if literal_candidates:
+                for value, text, source in _literal_candidate_set(
+                    field,
+                    literal_candidates,
+                ):
+                    task = self._prepare_sequence_task(
+                        prompt,
+                        field_index,
+                        field,
+                        value=value,
+                        candidate_text=text,
+                        source=source,
+                    )
+                    rows_by_field[field_index].append(len(tasks))
+                    tasks.append(task)
+
+        classification_probabilities: dict[int, list[float]] = {}
+        sequence_scores: dict[int, float] = {}
         forward_calls = 0
+        logits_to_keep = 1
 
         if tasks:
+            max_sequence_suffix = max(
+                (len(task.sequence_target_ids) for task in tasks),
+                default=0,
+            )
+            logits_to_keep = max(1, max_sequence_suffix + 1)
+
             encoded = self.tokenizer(
-                [task.rendered_prompt for task in tasks],
+                [task.input_text for task in tasks],
                 return_tensors="pt",
                 padding=True,
                 add_special_tokens=False,
@@ -138,21 +180,44 @@ class QwenSingleForwardSelector:
                 outputs = self.model(
                     **encoded,
                     use_cache=False,
-                    logits_to_keep=1,
+                    logits_to_keep=logits_to_keep,
                 )
 
-            next_token_logits = outputs.logits[:, -1, :].float()
+            logits = outputs.logits.float()
+
             for row, task in enumerate(tasks):
+                if task.sequence_target_ids:
+                    log_probs = torch.log_softmax(logits[row], dim=-1)
+                    suffix_len = len(task.sequence_target_ids)
+                    token_logprobs: list[float] = []
+                    for offset, token_id in enumerate(task.sequence_target_ids):
+                        relative_prediction_pos = (
+                            logits_to_keep - suffix_len + offset - 1
+                        )
+                        if relative_prediction_pos < 0:
+                            raise RuntimeError("insufficient logits retained for sequence scoring")
+                        token_logprobs.append(
+                            float(
+                                log_probs[
+                                    relative_prediction_pos,
+                                    token_id,
+                                ].item()
+                            )
+                        )
+                    sequence_scores[row] = fmean(token_logprobs)
+                    continue
+
                 ids = torch.tensor(
                     task.token_ids,
                     dtype=torch.long,
-                    device=next_token_logits.device,
+                    device=logits.device,
                 )
-                candidate_logits = next_token_logits[row, ids]
+                candidate_logits = logits[row, -1, ids]
                 probabilities = torch.softmax(candidate_logits, dim=-1)
-                task_probabilities.append(
-                    [float(probabilities[i].item()) for i in range(len(task.token_ids))]
-                )
+                classification_probabilities[row] = [
+                    float(probabilities[i].item())
+                    for i in range(len(task.token_ids))
+                ]
 
         selections: list[tuple[FieldSpec, Any]] = []
         details: list[FieldSelection] = []
@@ -179,7 +244,7 @@ class QwenSingleForwardSelector:
             if isinstance(field, ChoiceFieldSpec):
                 row = rows[0]
                 task = tasks[row]
-                probabilities = task_probabilities[row]
+                probabilities = classification_probabilities[row]
                 winner = max(range(len(probabilities)), key=probabilities.__getitem__)
                 value = task.option_values[winner]
                 selections.append((field, value))
@@ -211,7 +276,13 @@ class QwenSingleForwardSelector:
                 )
                 continue
 
-            if len(rows) != self.numeric_thresholds * 2:
+            threshold_rows = [
+                row for row in rows if tasks[row].method == "label-swap-threshold"
+            ]
+            sequence_rows = [
+                row for row in rows if tasks[row].method == "numeric-sequence-candidate"
+            ]
+            if len(threshold_rows) != self.numeric_thresholds * 2:
                 raise RuntimeError(
                     f"numeric field {field.dotted_path} has an invalid calibration row count"
                 )
@@ -219,9 +290,9 @@ class QwenSingleForwardSelector:
             calibrated_probabilities: list[float] = []
             threshold_details: list[dict[str, Any]] = []
 
-            for offset in range(0, len(rows), 2):
-                normal_row = rows[offset]
-                swapped_row = rows[offset + 1]
+            for offset in range(0, len(threshold_rows), 2):
+                normal_row = threshold_rows[offset]
+                swapped_row = threshold_rows[offset + 1]
                 normal_task = tasks[normal_row]
                 swapped_task = tasks[swapped_row]
 
@@ -235,9 +306,8 @@ class QwenSingleForwardSelector:
                         f"numeric field {field.dotted_path} has invalid calibration pairing"
                     )
 
-                normal_probs = task_probabilities[normal_row]
-                swapped_probs = task_probabilities[swapped_row]
-
+                normal_probs = classification_probabilities[normal_row]
+                swapped_probs = classification_probabilities[swapped_row]
                 normal_true = normal_probs[normal_task.option_values.index(True)]
                 swapped_true = swapped_probs[swapped_task.option_values.index(True)]
                 calibrated = _mean_log_odds_probability(normal_true, swapped_true)
@@ -250,22 +320,15 @@ class QwenSingleForwardSelector:
                         "normal_probability_ge": normal_true,
                         "swapped_probability_ge": swapped_true,
                         "calibrated_probability_ge": calibrated,
-                        "normal_mapping": {
-                            normal_task.option_texts[i]: normal_task.option_values[i]
-                            for i in range(len(normal_task.option_texts))
-                        },
-                        "swapped_mapping": {
-                            swapped_task.option_texts[i]: swapped_task.option_values[i]
-                            for i in range(len(swapped_task.option_texts))
-                        },
                     }
                 )
 
             monotonic_probabilities = _isotonic_nonincreasing(calibrated_probabilities)
             normalized_value = fmean(monotonic_probabilities)
-            value = quantize_numeric(field, normalized_value)
-            confidence = fmean(
-                abs(probability - 0.5) * 2 for probability in calibrated_probabilities
+            threshold_value = quantize_numeric(field, normalized_value)
+            threshold_confidence = fmean(
+                abs(probability - 0.5) * 2
+                for probability in calibrated_probabilities
             )
 
             for item, adjusted in zip(
@@ -275,22 +338,61 @@ class QwenSingleForwardSelector:
             ):
                 item["probability_ge_monotonic"] = adjusted
 
-            selections.append((field, value))
+            chosen_value = threshold_value
+            chosen_method = "label-swap-thresholds"
+            chosen_confidence = threshold_confidence
+            literal_details: dict[str, Any] | None = None
+
+            if sequence_rows:
+                ranked = sorted(
+                    (
+                        {
+                            "row": row,
+                            "value": tasks[row].sequence_candidate,
+                            "source": tasks[row].sequence_source,
+                            "score": sequence_scores[row],
+                        }
+                        for row in sequence_rows
+                    ),
+                    key=lambda item: item["score"],
+                    reverse=True,
+                )
+                best = ranked[0]
+                second = ranked[1]
+                margin = best["score"] - second["score"]
+                accepted = (
+                    best["source"] == "literal"
+                    and margin >= self.literal_margin
+                )
+                literal_details = {
+                    "accepted": accepted,
+                    "margin": margin,
+                    "required_margin": self.literal_margin,
+                    "ranking": ranked,
+                }
+                if accepted:
+                    chosen_value = best["value"]
+                    chosen_method = "literal-sequence"
+                    chosen_confidence = margin
+
+            selections.append((field, chosen_value))
             details.append(
                 FieldSelection(
                     path=field.dotted_path,
-                    value=value,
-                    method="label-swap-thresholds",
-                    confidence=confidence,
+                    value=chosen_value,
+                    method=chosen_method,
+                    confidence=chosen_confidence,
                     details={
                         "minimum": field.minimum,
                         "maximum": field.maximum,
                         "multiple_of": field.multiple_of,
                         "integer": field.integer,
                         "threshold_count": self.numeric_thresholds,
-                        "task_count": len(rows),
+                        "threshold_task_count": len(threshold_rows),
                         "normalized_value": normalized_value,
+                        "threshold_value": threshold_value,
                         "thresholds": threshold_details,
+                        "literal_candidates": literal_details,
                     },
                 )
             )
@@ -335,7 +437,7 @@ class QwenSingleForwardSelector:
                     return _Task(
                         field_index=field_index,
                         method="direct-choice",
-                        rendered_prompt=rendered,
+                        input_text=rendered,
                         token_ids=(false_id, true_id),
                         option_values=field.candidates,
                         option_texts=output_texts,
@@ -358,12 +460,16 @@ class QwenSingleForwardSelector:
                 for text in output_texts
             )
             if all(token_id is not None for token_id in token_ids):
-                resolved_ids = tuple(int(token_id) for token_id in token_ids if token_id is not None)
+                resolved_ids = tuple(
+                    int(token_id)
+                    for token_id in token_ids
+                    if token_id is not None
+                )
                 if len(set(resolved_ids)) == len(resolved_ids):
                     return _Task(
                         field_index=field_index,
                         method="direct-choice",
-                        rendered_prompt=rendered,
+                        input_text=rendered,
                         token_ids=resolved_ids,
                         option_values=field.candidates,
                         option_texts=output_texts,
@@ -377,7 +483,8 @@ class QwenSingleForwardSelector:
             use_labels=True,
         )
         token_ids = tuple(
-            self._single_continuation_token_id(rendered, label) for label in labels
+            self._single_continuation_token_id(rendered, label)
+            for label in labels
         )
         if any(token_id is None for token_id in token_ids):
             raise RuntimeError(
@@ -386,8 +493,10 @@ class QwenSingleForwardSelector:
         return _Task(
             field_index=field_index,
             method="surrogate-labels",
-            rendered_prompt=rendered,
-            token_ids=tuple(int(token_id) for token_id in token_ids if token_id is not None),
+            input_text=rendered,
+            token_ids=tuple(
+                int(token_id) for token_id in token_ids if token_id is not None
+            ),
             option_values=field.candidates,
             option_texts=labels,
         )
@@ -403,17 +512,14 @@ class QwenSingleForwardSelector:
     ) -> _Task:
         threshold_value = numeric_threshold_value(field, normalized_threshold)
         labels = ("A", "B")
-        token_ids = tuple(
-            self._standalone_token_id(label) for label in labels
-        )
+        token_ids = tuple(self._standalone_token_id(label) for label in labels)
         if any(token_id is None for token_id in token_ids):
             raise RuntimeError(
                 f"could not encode A/B calibration labels for {field.dotted_path}"
             )
 
-        option_values: tuple[bool, bool]
         if swapped:
-            option_values = (True, False)
+            option_values: tuple[bool, bool] = (True, False)
             role = "swapped"
         else:
             option_values = (False, True)
@@ -428,13 +534,44 @@ class QwenSingleForwardSelector:
         return _Task(
             field_index=field_index,
             method="label-swap-threshold",
-            rendered_prompt=rendered,
-            token_ids=tuple(int(token_id) for token_id in token_ids if token_id is not None),
+            input_text=rendered,
+            token_ids=tuple(
+                int(token_id) for token_id in token_ids if token_id is not None
+            ),
             option_values=option_values,
             option_texts=labels,
             normalized_threshold=normalized_threshold,
             threshold_value=threshold_value,
             calibration_role=role,
+        )
+
+    def _prepare_sequence_task(
+        self,
+        prompt: str,
+        field_index: int,
+        field: NumericFieldSpec,
+        *,
+        value: int | float,
+        candidate_text: str,
+        source: str,
+    ) -> _Task:
+        rendered = self._render_numeric_value_prompt(prompt, field)
+        base_ids = self.tokenizer.encode(rendered, add_special_tokens=False)
+        full_text = rendered + candidate_text
+        full_ids = self.tokenizer.encode(full_text, add_special_tokens=False)
+        prefix_len = _common_prefix_length(base_ids, full_ids)
+        target_ids = tuple(full_ids[prefix_len:])
+        if not target_ids:
+            raise RuntimeError(
+                f"empty teacher-forced suffix for numeric field {field.dotted_path}"
+            )
+        return _Task(
+            field_index=field_index,
+            method="numeric-sequence-candidate",
+            input_text=full_text,
+            sequence_candidate=value,
+            sequence_source=source,
+            sequence_target_ids=target_ids,
         )
 
     def _render_choice_prompt(
@@ -513,6 +650,30 @@ class QwenSingleForwardSelector:
         ]
         return self._render_assistant_prefill(messages)
 
+    def _render_numeric_value_prompt(
+        self,
+        prompt: str,
+        field: NumericFieldSpec,
+    ) -> str:
+        description = f"\nField description: {field.description}" if field.description else ""
+        messages = [
+            {
+                "role": "system",
+                "content": "Return only the requested numeric value. Do not explain.",
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Context:\n{prompt}\n\n"
+                    f"Field: {field.dotted_path}{description}\n"
+                    f"Allowed range: [{field.minimum}, {field.maximum}]\n"
+                    "Return the value of this field. "
+                    "If explicitly stated, use that exact value."
+                ),
+            },
+        ]
+        return self._render_assistant_prefill(messages)
+
     def _render_assistant_prefill(self, messages: list[dict[str, str]]) -> str:
         rendered = self.tokenizer.apply_chat_template(
             messages,
@@ -528,8 +689,14 @@ class QwenSingleForwardSelector:
         text: str,
     ) -> int | None:
         base_ids = self.tokenizer.encode(rendered_prompt, add_special_tokens=False)
-        full_ids = self.tokenizer.encode(rendered_prompt + text, add_special_tokens=False)
-        if full_ids[: len(base_ids)] == base_ids and len(full_ids) == len(base_ids) + 1:
+        full_ids = self.tokenizer.encode(
+            rendered_prompt + text,
+            add_special_tokens=False,
+        )
+        if (
+            full_ids[: len(base_ids)] == base_ids
+            and len(full_ids) == len(base_ids) + 1
+        ):
             return full_ids[-1]
         return self._standalone_token_id(text)
 
@@ -538,6 +705,101 @@ class QwenSingleForwardSelector:
         if len(direct_ids) == 1:
             return direct_ids[0]
         return None
+
+
+def _numeric_literal_candidates(
+    prompt: str,
+    field: NumericFieldSpec,
+    *,
+    max_literals: int,
+) -> list[tuple[int | float, str]]:
+    found: list[tuple[int | float, str]] = []
+    seen: set[int | float] = set()
+
+    for match in _NUMBER_RE.finditer(prompt):
+        text = match.group(0)
+        try:
+            numeric = float(text)
+        except ValueError:
+            continue
+        if not math.isfinite(numeric):
+            continue
+        if numeric < float(field.minimum) or numeric > float(field.maximum):
+            continue
+
+        if field.integer:
+            if not numeric.is_integer():
+                continue
+            value: int | float = int(numeric)
+        else:
+            value = numeric
+
+        if field.multiple_of is not None:
+            span = float(field.maximum) - float(field.minimum)
+            if span == 0:
+                continue
+            normalized = (float(value) - float(field.minimum)) / span
+            quantized = quantize_numeric(field, normalized)
+            if not math.isclose(
+                float(quantized),
+                float(value),
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            ):
+                continue
+            value = quantized
+
+        if value in seen:
+            continue
+        seen.add(value)
+        found.append((value, text))
+        if len(found) >= max_literals:
+            break
+
+    return found
+
+
+def _literal_candidate_set(
+    field: NumericFieldSpec,
+    literals: list[tuple[int | float, str]],
+) -> list[tuple[int | float, str, str]]:
+    candidates: list[tuple[int | float, str, str]] = []
+    by_value: dict[int | float, int] = {}
+
+    for value, text in literals:
+        by_value[value] = len(candidates)
+        candidates.append((value, text, "literal"))
+
+    for normalized in (0.0, 0.5, 1.0):
+        value = quantize_numeric(field, normalized)
+        if value in by_value:
+            continue
+        by_value[value] = len(candidates)
+        candidates.append(
+            (
+                value,
+                _format_numeric_candidate(value),
+                "anchor",
+            )
+        )
+
+    return candidates
+
+
+def _format_numeric_candidate(value: int | float) -> str:
+    if isinstance(value, int):
+        return str(value)
+    if float(value).is_integer():
+        return str(int(value))
+    return format(float(value), ".12g")
+
+
+def _common_prefix_length(left: list[int], right: list[int]) -> int:
+    size = min(len(left), len(right))
+    index = 0
+    while index < size and left[index] == right[index]:
+        index += 1
+    return index
 
 
 def _candidate_output_text(value: Any) -> str | None:

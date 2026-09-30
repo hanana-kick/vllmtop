@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import json
-import re
-from decimal import Decimal
+import math
 from dataclasses import dataclass
 from statistics import fmean
 from typing import Any
@@ -52,6 +51,7 @@ class _Task:
     option_texts: tuple[str, ...]
     normalized_threshold: float | None = None
     threshold_value: int | float | None = None
+    calibration_role: str | None = None
 
 
 class QwenSingleForwardSelector:
@@ -63,8 +63,7 @@ class QwenSingleForwardSelector:
         *,
         dtype: str = "bfloat16",
         max_candidates: int = 26,
-        numeric_thresholds: int = 8,
-        numeric_literal_fastpath: bool = True,
+        numeric_thresholds: int = 4,
         tokenizer: Any | None = None,
         model: Any | None = None,
     ) -> None:
@@ -74,42 +73,30 @@ class QwenSingleForwardSelector:
         self.model_id = model_id
         self.max_candidates = max_candidates
         self.numeric_thresholds = numeric_thresholds
-        self.numeric_literal_fastpath = numeric_literal_fastpath
 
-        self._dtype_name = dtype
+        if tokenizer is None:
+            tokenizer = AutoTokenizer.from_pretrained(model_id)
         self.tokenizer = tokenizer
-        self.model = model
+        self.tokenizer.padding_side = "left"
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        if self.tokenizer is not None:
-            self._configure_tokenizer()
-        if self.model is not None:
-            self.model.to("cpu")
-            self.model.eval()
+        if model is None:
+            torch_dtype = _resolve_dtype(dtype)
+            model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                dtype=torch_dtype,
+                low_cpu_mem_usage=True,
+            )
+        self.model = model
+        self.model.to("cpu")
+        self.model.eval()
 
     def select(self, prompt: str, schema: dict[str, Any]) -> SelectionResult:
         fields = compile_schema(schema, max_candidates=self.max_candidates)
         tasks: list[_Task] = []
         rows_by_field: dict[int, list[int]] = {i: [] for i in range(len(fields))}
         fixed_values: dict[int, int | float] = {}
-        fixed_methods: dict[int, str] = {}
-
-        literal_values = (
-            _unique_numeric_literal_assignment(prompt, fields)
-            if self.numeric_literal_fastpath
-            else {}
-        )
-
-        needs_runtime = any(
-            isinstance(field, ChoiceFieldSpec)
-            or (
-                isinstance(field, NumericFieldSpec)
-                and field_index not in literal_values
-                and field.minimum != field.maximum
-            )
-            for field_index, field in enumerate(fields)
-        )
-        if needs_runtime:
-            self._ensure_runtime()
 
         for field_index, field in enumerate(fields):
             if isinstance(field, ChoiceFieldSpec):
@@ -118,25 +105,21 @@ class QwenSingleForwardSelector:
                 tasks.append(task)
                 continue
 
-            if field_index in literal_values:
-                fixed_values[field_index] = literal_values[field_index]
-                fixed_methods[field_index] = "literal-fastpath"
-                continue
-
             if field.minimum == field.maximum:
                 fixed_values[field_index] = quantize_numeric(field, 0.0)
-                fixed_methods[field_index] = "fixed-range"
                 continue
 
             for normalized_threshold in self._normalized_thresholds():
-                task = self._prepare_threshold_task(
-                    prompt,
-                    field_index,
-                    field,
-                    normalized_threshold,
-                )
-                rows_by_field[field_index].append(len(tasks))
-                tasks.append(task)
+                for swapped in (False, True):
+                    task = self._prepare_threshold_task(
+                        prompt,
+                        field_index,
+                        field,
+                        normalized_threshold,
+                        swapped=swapped,
+                    )
+                    rows_by_field[field_index].append(len(tasks))
+                    tasks.append(task)
 
         task_probabilities: list[list[float]] = []
         forward_calls = 0
@@ -177,18 +160,16 @@ class QwenSingleForwardSelector:
         for field_index, field in enumerate(fields):
             if field_index in fixed_values:
                 value = fixed_values[field_index]
-                method = fixed_methods[field_index]
                 selections.append((field, value))
                 details.append(
                     FieldSelection(
                         path=field.dotted_path,
                         value=value,
-                        method=method,
+                        method="fixed-range",
                         confidence=1.0,
                         details={
                             "minimum": field.minimum,
                             "maximum": field.maximum,
-                            "source": "prompt numeric literal" if method == "literal-fastpath" else "schema fixed range",
                         },
                     )
                 )
@@ -230,30 +211,62 @@ class QwenSingleForwardSelector:
                 )
                 continue
 
-            raw_probabilities: list[float] = []
+            if len(rows) != self.numeric_thresholds * 2:
+                raise RuntimeError(
+                    f"numeric field {field.dotted_path} has an invalid calibration row count"
+                )
+
+            calibrated_probabilities: list[float] = []
             threshold_details: list[dict[str, Any]] = []
-            for row in rows:
-                task = tasks[row]
-                probabilities = task_probabilities[row]
-                true_index = task.option_values.index(True)
-                probability_true = probabilities[true_index]
-                raw_probabilities.append(probability_true)
+
+            for offset in range(0, len(rows), 2):
+                normal_row = rows[offset]
+                swapped_row = rows[offset + 1]
+                normal_task = tasks[normal_row]
+                swapped_task = tasks[swapped_row]
+
+                if (
+                    normal_task.calibration_role != "normal"
+                    or swapped_task.calibration_role != "swapped"
+                    or normal_task.normalized_threshold
+                    != swapped_task.normalized_threshold
+                ):
+                    raise RuntimeError(
+                        f"numeric field {field.dotted_path} has invalid calibration pairing"
+                    )
+
+                normal_probs = task_probabilities[normal_row]
+                swapped_probs = task_probabilities[swapped_row]
+
+                normal_true = normal_probs[normal_task.option_values.index(True)]
+                swapped_true = swapped_probs[swapped_task.option_values.index(True)]
+                calibrated = _mean_log_odds_probability(normal_true, swapped_true)
+                calibrated_probabilities.append(calibrated)
+
                 threshold_details.append(
                     {
-                        "normalized_threshold": task.normalized_threshold,
-                        "threshold": task.threshold_value,
-                        "probability_ge": probability_true,
-                        "output_tokens": {
-                            task.option_texts[i]: task.token_ids[i]
-                            for i in range(len(task.option_texts))
+                        "normalized_threshold": normal_task.normalized_threshold,
+                        "threshold": normal_task.threshold_value,
+                        "normal_probability_ge": normal_true,
+                        "swapped_probability_ge": swapped_true,
+                        "calibrated_probability_ge": calibrated,
+                        "normal_mapping": {
+                            normal_task.option_texts[i]: normal_task.option_values[i]
+                            for i in range(len(normal_task.option_texts))
+                        },
+                        "swapped_mapping": {
+                            swapped_task.option_texts[i]: swapped_task.option_values[i]
+                            for i in range(len(swapped_task.option_texts))
                         },
                     }
                 )
 
-            monotonic_probabilities = _isotonic_nonincreasing(raw_probabilities)
+            monotonic_probabilities = _isotonic_nonincreasing(calibrated_probabilities)
             normalized_value = fmean(monotonic_probabilities)
             value = quantize_numeric(field, normalized_value)
-            confidence = fmean(abs(probability - 0.5) * 2 for probability in raw_probabilities)
+            confidence = fmean(
+                abs(probability - 0.5) * 2 for probability in calibrated_probabilities
+            )
 
             for item, adjusted in zip(
                 threshold_details,
@@ -267,14 +280,15 @@ class QwenSingleForwardSelector:
                 FieldSelection(
                     path=field.dotted_path,
                     value=value,
-                    method="normalized-thresholds",
+                    method="label-swap-thresholds",
                     confidence=confidence,
                     details={
                         "minimum": field.minimum,
                         "maximum": field.maximum,
                         "multiple_of": field.multiple_of,
                         "integer": field.integer,
-                        "threshold_count": len(rows),
+                        "threshold_count": self.numeric_thresholds,
+                        "task_count": len(rows),
                         "normalized_value": normalized_value,
                         "thresholds": threshold_details,
                     },
@@ -287,28 +301,6 @@ class QwenSingleForwardSelector:
             forward_calls=forward_calls,
             batch_size=len(tasks),
         )
-
-    def _configure_tokenizer(self) -> None:
-        if self.tokenizer is None:
-            raise RuntimeError("tokenizer is not loaded")
-        self.tokenizer.padding_side = "left"
-        if self.tokenizer.pad_token_id is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-
-    def _ensure_runtime(self) -> None:
-        if self.tokenizer is None:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
-            self._configure_tokenizer()
-
-        if self.model is None:
-            torch_dtype = _resolve_dtype(self._dtype_name)
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_id,
-                dtype=torch_dtype,
-                low_cpu_mem_usage=True,
-            )
-            self.model.to("cpu")
-            self.model.eval()
 
     def _normalized_thresholds(self) -> list[float]:
         count = self.numeric_thresholds
@@ -406,41 +398,43 @@ class QwenSingleForwardSelector:
         field_index: int,
         field: NumericFieldSpec,
         normalized_threshold: float,
+        *,
+        swapped: bool,
     ) -> _Task:
         threshold_value = numeric_threshold_value(field, normalized_threshold)
-
-        for false_text, true_text in (
-            ("false", "true"),
-            ("no", "yes"),
-            ("0", "1"),
-        ):
-            rendered = self._render_threshold_prompt(
-                prompt,
-                field,
-                threshold_value,
-                false_text,
-                true_text,
+        labels = ("A", "B")
+        token_ids = tuple(
+            self._standalone_token_id(label) for label in labels
+        )
+        if any(token_id is None for token_id in token_ids):
+            raise RuntimeError(
+                f"could not encode A/B calibration labels for {field.dotted_path}"
             )
-            false_id = self._single_continuation_token_id(rendered, false_text)
-            true_id = self._single_continuation_token_id(rendered, true_text)
-            if (
-                false_id is not None
-                and true_id is not None
-                and false_id != true_id
-            ):
-                return _Task(
-                    field_index=field_index,
-                    method="normalized-threshold",
-                    rendered_prompt=rendered,
-                    token_ids=(false_id, true_id),
-                    option_values=(False, True),
-                    option_texts=(false_text, true_text),
-                    normalized_threshold=normalized_threshold,
-                    threshold_value=threshold_value,
-                )
 
-        raise RuntimeError(
-            f"could not find one-token boolean outputs for numeric field {field.dotted_path}"
+        option_values: tuple[bool, bool]
+        if swapped:
+            option_values = (True, False)
+            role = "swapped"
+        else:
+            option_values = (False, True)
+            role = "normal"
+
+        rendered = self._render_threshold_prompt(
+            prompt,
+            field,
+            threshold_value,
+            option_values,
+        )
+        return _Task(
+            field_index=field_index,
+            method="label-swap-threshold",
+            rendered_prompt=rendered,
+            token_ids=tuple(int(token_id) for token_id in token_ids if token_id is not None),
+            option_values=option_values,
+            option_texts=labels,
+            normalized_threshold=normalized_threshold,
+            threshold_value=threshold_value,
+            calibration_role=role,
         )
 
     def _render_choice_prompt(
@@ -492,14 +486,17 @@ class QwenSingleForwardSelector:
         prompt: str,
         field: NumericFieldSpec,
         threshold_value: int | float,
-        false_text: str,
-        true_text: str,
+        option_values: tuple[bool, bool],
     ) -> str:
         description = f"\nField description: {field.description}" if field.description else ""
+        mapping = "\n".join(
+            f"{label} = {'true' if value else 'false'}"
+            for label, value in zip(("A", "B"), option_values, strict=True)
+        )
         messages = [
             {
                 "role": "system",
-                "content": "You estimate numeric values from context. Output only the requested boolean.",
+                "content": "You are a deterministic classifier. Output only A or B.",
             },
             {
                 "role": "user",
@@ -509,7 +506,8 @@ class QwenSingleForwardSelector:
                     f"Allowed range: [{field.minimum}, {field.maximum}]\n"
                     f"Question: Is the best value for this field greater than or equal to "
                     f"{threshold_value}?\n"
-                    f"Return exactly {false_text} or {true_text}."
+                    f"{mapping}\n"
+                    "Return exactly A or B."
                 ),
             },
         ]
@@ -533,120 +531,13 @@ class QwenSingleForwardSelector:
         full_ids = self.tokenizer.encode(rendered_prompt + text, add_special_tokens=False)
         if full_ids[: len(base_ids)] == base_ids and len(full_ids) == len(base_ids) + 1:
             return full_ids[-1]
+        return self._standalone_token_id(text)
 
-        # Next-token scoring operates on the already-tokenized prompt. A candidate
-        # does not need prompt+text to re-tokenize with an identical prefix; it only
-        # needs to exist as one vocabulary token that can be emitted next.
+    def _standalone_token_id(self, text: str) -> int | None:
         direct_ids = self.tokenizer.encode(text, add_special_tokens=False)
         if len(direct_ids) == 1:
             return direct_ids[0]
         return None
-
-
-_NUMBER_LITERAL_RE = re.compile(
-    r"(?<![A-Za-z0-9_.])"
-    r"[-+]?"
-    r"(?:(?:\d{1,3}(?:,\d{3})+)(?:\.\d*)?|\d+(?:\.\d*)?|\.\d+)"
-    r"(?:[eE][-+]?\d+)?"
-    r"(?![A-Za-z0-9_.])"
-)
-
-
-def _unique_numeric_literal_assignment(
-    prompt: str,
-    fields: list[FieldSpec],
-) -> dict[int, int | float]:
-    """Return one conservative field assignment or no assignment.
-
-    The fast path activates only when the entire prompt contains exactly one
-    numeric literal, that literal lies strictly inside exactly one numeric
-    field's range, and it satisfies integer/multipleOf constraints.
-    """
-    matches = [match.group(0) for match in _NUMBER_LITERAL_RE.finditer(prompt)]
-    if len(matches) != 1:
-        return {}
-
-    literal_text = matches[0].replace(",", "")
-    try:
-        value = Decimal(literal_text)
-    except Exception:
-        return {}
-
-    accepted: list[tuple[int, int | float]] = []
-    literal_start = next(_NUMBER_LITERAL_RE.finditer(prompt)).start()
-    for index, field in enumerate(fields):
-        if not isinstance(field, NumericFieldSpec):
-            continue
-        if not _field_name_is_explicit_near_literal(prompt, field, literal_start):
-            continue
-        coerced = _coerce_literal_for_numeric_field(field, value)
-        if coerced is not None:
-            accepted.append((index, coerced))
-
-    if len(accepted) != 1:
-        return {}
-    index, coerced = accepted[0]
-    return {index: coerced}
-
-
-def _field_name_is_explicit_near_literal(
-    prompt: str,
-    field: NumericFieldSpec,
-    literal_start: int,
-) -> bool:
-    """Require an explicit field-name cue close to the sole numeric literal."""
-    leaf_name = field.path[-1].strip()
-    if not leaf_name:
-        return False
-
-    # Match the full identifier and a humanized snake/kebab-case form.
-    variants = {
-        leaf_name.casefold(),
-        leaf_name.replace("_", " ").replace("-", " ").casefold(),
-    }
-    variants = {variant for variant in variants if len(variant) >= 3}
-    if not variants:
-        return False
-
-    folded = prompt.casefold()
-    window_start = max(0, literal_start - 96)
-    window_end = min(len(prompt), literal_start + 96)
-    window = folded[window_start:window_end]
-
-    for variant in variants:
-        pattern = re.escape(variant).replace(r"\ ", r"\s+")
-        if re.search(rf"(?<!\w){pattern}(?!\w)", window):
-            return True
-    return False
-
-
-def _coerce_literal_for_numeric_field(
-    field: NumericFieldSpec,
-    value: Decimal,
-) -> int | float | None:
-    minimum = Decimal(str(field.minimum))
-    maximum = Decimal(str(field.maximum))
-
-    # Boundary values are deliberately left to the model unless the schema
-    # itself is fixed. This avoids mapping incidental 0/1 counts into [0,1]
-    # semantic scales such as danger scores.
-    if not (minimum < value < maximum):
-        return None
-
-    if field.integer and value != value.to_integral_value():
-        return None
-
-    if field.multiple_of is not None:
-        step = Decimal(str(field.multiple_of))
-        quotient = value / step
-        if quotient != quotient.to_integral_value():
-            return None
-
-    if field.integer:
-        return int(value)
-    if value == value.to_integral_value():
-        return int(value)
-    return float(value)
 
 
 def _candidate_output_text(value: Any) -> str | None:
@@ -659,6 +550,17 @@ def _candidate_output_text(value: Any) -> str | None:
     if isinstance(value, (int, float)):
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     return None
+
+
+def _mean_log_odds_probability(first: float, second: float) -> float:
+    epsilon = 1e-6
+    a = min(1.0 - epsilon, max(epsilon, first))
+    b = min(1.0 - epsilon, max(epsilon, second))
+    mean_log_odds = 0.5 * (
+        math.log(a / (1.0 - a))
+        + math.log(b / (1.0 - b))
+    )
+    return 1.0 / (1.0 + math.exp(-mean_log_odds))
 
 
 def _isotonic_nonincreasing(values: list[float]) -> list[float]:

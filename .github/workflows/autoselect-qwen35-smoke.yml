@@ -8,7 +8,7 @@ on:
       - .github/workflows/autoselect-qwen35-smoke.yml
 
 jobs:
-  sequence-scoring-benchmark:
+  nice-threshold-benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -16,7 +16,7 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
-      TEST_REVISION: "sequence-scoring-1"
+      TEST_REVISION: "nice-threshold-1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -35,16 +35,16 @@ jobs:
             'huggingface_hub[hf_xet]>=1.0' \
             'accelerate>=1.0' \
             'safetensors>=0.7'
-      - name: Benchmark teacher-forced numeric sequence scoring
+      - name: Benchmark human-friendly numeric thresholds
         shell: bash
         run: |
           set -o pipefail
-          .venv/bin/python _autoselect_test/sequence_scoring_benchmark.py 2>&1 | tee sequence-scoring.log
+          .venv/bin/python _autoselect_test/nice_threshold_benchmark.py 2>&1 | tee nice-threshold.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: sequence-scoring-benchmark
+          name: nice-threshold-benchmark
           path: |
-            sequence-scoring-benchmark.json
-            sequence-scoring.log
+            nice-threshold-benchmark.json
+            nice-threshold.log
           if-no-files-found: warn

@@ -16,51 +16,26 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
-      TEST_REVISION: "17"
+      TEST_REVISION: "label-swap-1"
     steps:
       - uses: actions/checkout@v4
-
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-
       - name: Create isolated uv environment
-        run: |
-          uv venv .venv
-          .venv/bin/python -V
-
+        run: uv venv .venv
       - name: Install CPU inference stack
         run: |
           uv pip install --python .venv/bin/python             --index-strategy unsafe-best-match             --index-url https://download.pytorch.org/whl/cpu             --extra-index-url https://pypi.org/simple             'torch==2.14.0+cpu'
-          uv pip install --python .venv/bin/python             'transformers==5.17.0'             'huggingface_hub[hf_xet]>=1.0'             'accelerate>=1.0'             'safetensors>=0.7'             'pytest>=8.4'
-
-      - name: Run mirrored autoselect unit tests
+          uv pip install --python .venv/bin/python             'transformers==5.17.0'             'huggingface_hub[hf_xet]>=1.0'             'accelerate>=1.0'             'safetensors>=0.7'
+      - name: Compare direct thresholds with label-swap calibration
         run: |
-          PYTHONPATH=_autoselect_test/src .venv/bin/python -m pytest _autoselect_test/tests -q
-
-      - name: Run real Qwen dynamic-threshold integration
-        run: |
-          .venv/bin/python _autoselect_test/integration.py 2>&1 | tee dynamic-threshold.log
-
-      - name: Validate structural guarantees
-        run: |
-          .venv/bin/python - <<'PY'
-          import json
-          x = json.load(open("dynamic-threshold-result.json", encoding="utf-8"))
-          assert x["weights_sha256"] == "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696"
-          assert len(x["cases"]) == 3
-          assert [case["forward_calls"] for case in x["cases"]] == [0, 0, 1]
-          assert x["cases"][0]["batch_size"] == 0
-          assert x["cases"][1]["batch_size"] == 0
-          assert x["cases"][2]["batch_size"] == 9
-          print(json.dumps([case["value"] for case in x["cases"]], ensure_ascii=False))
-          PY
-
+          .venv/bin/python _autoselect_test/label_swap_experiment.py 2>&1 | tee label-swap.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: autoselect-dynamic-threshold-evidence
+          name: autoselect-label-swap-evidence
           path: |
-            dynamic-threshold-result.json
-            dynamic-threshold.log
+            label-swap-result.json
+            label-swap.log
           if-no-files-found: warn

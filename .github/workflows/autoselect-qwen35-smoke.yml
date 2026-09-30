@@ -1,4 +1,4 @@
-name: autoselect-qwen35-smoke
+name: autoselect-digit-regression-experiment
 
 on:
   push:
@@ -16,29 +16,23 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
-      TEST_REVISION: "hybrid-selector-2"
+      TEST_REVISION: "7"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - name: Create isolated uv environment
-        run: uv venv .venv
+      - run: uv venv .venv
       - name: Install CPU inference stack
         run: |
           uv pip install --python .venv/bin/python             --index-strategy unsafe-best-match             --index-url https://download.pytorch.org/whl/cpu             --extra-index-url https://pypi.org/simple             'torch==2.14.0+cpu'
-          uv pip install --python .venv/bin/python             'transformers==5.17.0'             'huggingface_hub[hf_xet]>=1.0'             'accelerate>=1.0'             'safetensors>=0.7'             'pytest>=8.4'
-      - name: Run hybrid selector unit tests
+          uv pip install --python .venv/bin/python             'transformers==5.17.0'             'huggingface_hub[hf_xet]>=1.0'             'accelerate>=1.0'             'safetensors>=0.7'
+      - name: Run digit regression experiment
         run: |
-          PYTHONPATH=_autoselect_test/src .venv/bin/python -m pytest _autoselect_test/tests -q
-      - name: Run real Qwen hybrid selector integration
-        run: |
-          set -o pipefail\n          .venv/bin/python _autoselect_test/integration.py 2>&1 | tee hybrid-selector.log
+          .venv/bin/python digit_regression_experiment.py | tee digit-regression.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: autoselect-hybrid-selector-evidence
+          name: digit-regression-evidence
           path: |
-            hybrid-result.json
-            hybrid-selector.log
+            digit-regression-result.json
+            digit-regression.log
           if-no-files-found: warn

@@ -16,7 +16,7 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
-      TEST_REVISION: "hybrid-selector-1"
+      TEST_REVISION: "hybrid-selector-2"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -33,7 +33,7 @@ jobs:
           PYTHONPATH=_autoselect_test/src .venv/bin/python -m pytest _autoselect_test/tests -q
       - name: Run real Qwen hybrid selector integration
         run: |
-          .venv/bin/python _autoselect_test/integration.py 2>&1 | tee hybrid-selector.log
+          set -o pipefail\n          .venv/bin/python _autoselect_test/integration.py 2>&1 | tee hybrid-selector.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

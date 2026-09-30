@@ -517,7 +517,12 @@ class QwenSingleForwardSelector:
         messages = [
             {
                 "role": "system",
-                "content": "You estimate numeric values from context. Output only the requested boolean.",
+                "content": (
+                    "You compare a numeric field to a threshold. "
+                    "If the context states an exact numeric value for the field, "
+                    "use that value exactly. Only infer a value when no exact value "
+                    "is stated. Output only false or true."
+                ),
             },
             {
                 "role": "user",
@@ -525,8 +530,10 @@ class QwenSingleForwardSelector:
                     f"Context:\n{prompt}\n\n"
                     f"Field: {field.dotted_path}{description}\n"
                     f"Allowed range: [{field.minimum}, {field.maximum}]\n"
-                    f"Question: Is the best value for this field greater than or equal to "
-                    f"{threshold_value}?\n"
+                    f"Threshold: {threshold_value}\n"
+                    "Silently resolve one numeric value for the field. "
+                    "If an exact value is stated, do not estimate or reinterpret it. "
+                    "Then answer whether value >= threshold. "
                     f"Return exactly {false_text} or {true_text}."
                 ),
             },
@@ -541,12 +548,17 @@ class QwenSingleForwardSelector:
         messages = [
             {
                 "role": "system",
-                "content": "Output only one of the two requested boolean tokens.",
+                "content": (
+                    "You compare a numeric field to a threshold. "
+                    "If the context states an exact numeric value for the field, "
+                    "use that value exactly. Only infer a value when no exact value "
+                    "is stated. Output only false or true."
+                ),
             },
             {
                 "role": "user",
                 "content": (
-                    "There is no information that favors either answer. "
+                    "There is no information that favors either boolean answer. "
                     f"Treat {false_text} and {true_text} as equally plausible. "
                     f"Return exactly {false_text} or {true_text}."
                 ),

@@ -294,6 +294,59 @@ def test_literal_fastpath_refuses_ambiguous_numeric_fields() -> None:
     assert all(field.method == "normalized-thresholds" for field in result.fields)
 
 
+def test_literal_fastpath_requires_explicit_field_name_cue() -> None:
+    model = FakeModel([0.9, 0.8])
+    selector = QwenSingleForwardSelector(
+        tokenizer=FakeTokenizer(),
+        model=model,
+        numeric_thresholds=2,
+    )
+
+    result = selector.select(
+        "There are exactly 55 enemies nearby.",
+        {
+            "type": "object",
+            "properties": {
+                "temperature": {
+                    "type": "number",
+                    "minimum": -20,
+                    "maximum": 80,
+                }
+            },
+        },
+    )
+
+    assert model.calls == 1
+    assert result.batch_size == 2
+    assert result.fields[0].method == "normalized-thresholds"
+
+
+def test_literal_fastpath_does_not_match_field_name_inside_larger_word() -> None:
+    model = FakeModel([0.9, 0.8])
+    selector = QwenSingleForwardSelector(
+        tokenizer=FakeTokenizer(),
+        model=model,
+        numeric_thresholds=2,
+    )
+
+    result = selector.select(
+        "The scoreboard shows 10.",
+        {
+            "type": "object",
+            "properties": {
+                "score": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                }
+            },
+        },
+    )
+
+    assert model.calls == 1
+    assert result.fields[0].method == "normalized-thresholds"
+
+
 def test_literal_fastpath_refuses_range_boundary() -> None:
     model = FakeModel([0.9, 0.8])
     selector = QwenSingleForwardSelector(

@@ -8,7 +8,7 @@ on:
       - .github/workflows/autoselect-qwen35-smoke.yml
 
 jobs:
-  nice-threshold-benchmark:
+  fewshot-threshold-benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -16,7 +16,7 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
-      TEST_REVISION: "nice-threshold-1"
+      TEST_REVISION: "fewshot-threshold-1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -35,16 +35,16 @@ jobs:
             'huggingface_hub[hf_xet]>=1.0' \
             'accelerate>=1.0' \
             'safetensors>=0.7'
-      - name: Benchmark human-friendly numeric thresholds
+      - name: Benchmark balanced in-context threshold examples
         shell: bash
         run: |
           set -o pipefail
-          .venv/bin/python _autoselect_test/nice_threshold_benchmark.py 2>&1 | tee nice-threshold.log
+          .venv/bin/python _autoselect_test/fewshot_threshold_benchmark.py 2>&1 | tee fewshot-threshold.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: nice-threshold-benchmark
+          name: fewshot-threshold-benchmark
           path: |
-            nice-threshold-benchmark.json
-            nice-threshold.log
+            fewshot-threshold-benchmark.json
+            fewshot-threshold.log
           if-no-files-found: warn

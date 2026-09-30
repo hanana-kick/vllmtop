@@ -6,9 +6,6 @@ import torch
 from autoselect.selector import (
     QwenSingleForwardSelector,
     _isotonic_nonincreasing,
-    _literal_candidate_set,
-    _mean_log_odds_probability,
-    _numeric_literal_candidates,
 )
 
 
@@ -73,9 +70,10 @@ class FakeTokenizer:
 
 
 class FakeModel:
-    def __init__(self, row_specs):
+    def __init__(self, boolean_log_odds, enum_winner=None):
         self.calls = 0
-        self.row_specs = list(row_specs)
+        self.boolean_log_odds = list(boolean_log_odds)
+        self.enum_winner = enum_winner
         self.last_batch_size = None
 
     def to(self, device):
@@ -98,43 +96,32 @@ class FakeModel:
         assert attention_mask.shape == input_ids.shape
         assert use_cache is False
         assert logits_to_keep == 1
-        assert len(self.row_specs) == input_ids.shape[0]
 
         logits = torch.full((input_ids.shape[0], 1, 128), -20.0)
-        for row, spec in enumerate(self.row_specs):
-            kind, probability_true = spec
-            p = torch.tensor(float(probability_true))
-            q = 1.0 - p
-            if kind == "ab_normal":
-                logits[row, 0, 12] = torch.log(q)
-                logits[row, 0, 13] = torch.log(p)
-            elif kind == "ab_swapped":
-                logits[row, 0, 12] = torch.log(p)
-                logits[row, 0, 13] = torch.log(q)
-            elif kind == "bool":
-                logits[row, 0, 10] = torch.log(q)
-                logits[row, 0, 11] = torch.log(p)
-            elif kind == "enum":
+        bool_row = 0
+        for row in range(input_ids.shape[0]):
+            if bool_row < len(self.boolean_log_odds):
+                lod = float(self.boolean_log_odds[bool_row])
+                logits[row, 0, 10] = 0.0
+                logits[row, 0, 11] = lod
+                bool_row += 1
+            elif self.enum_winner is not None:
                 logits[row, 0, 12] = 0.0
-                logits[row, 0, 13] = 1.0
-                logits[row, 0, 14] = -1.0
-            else:
-                raise AssertionError(kind)
+                logits[row, 0, 13] = 1.0 if self.enum_winner == 1 else 0.0
+                logits[row, 0, 14] = 1.0 if self.enum_winner == 2 else -1.0
         return SimpleNamespace(logits=logits)
 
 
-def threshold_rows(probabilities):
-    rows = []
-    for probability in probabilities:
-        rows.append(("ab_normal", probability))
-        rows.append(("ab_swapped", probability))
-    return rows
+def logit(probability: float) -> float:
+    return float(torch.logit(torch.tensor(probability)).item())
 
 
-def test_dynamic_number_and_boolean_share_one_forward() -> None:
-    model = FakeModel(
-        threshold_rows([0.9, 0.8, 0.7, 0.6]) + [("bool", 0.95)]
-    )
+def test_global_calibration_recovers_numeric_probabilities_in_one_forward() -> None:
+    semantic = [0.9, 0.8, 0.7, 0.6]
+    bias = 0.5
+    threshold_log_odds = [logit(p) + bias for p in semantic]
+    # task order: thresholds, boolean choice, one shared calibration row
+    model = FakeModel(threshold_log_odds + [logit(0.95), bias])
     selector = QwenSingleForwardSelector(
         tokenizer=FakeTokenizer(),
         model=model,
@@ -142,7 +129,7 @@ def test_dynamic_number_and_boolean_share_one_forward() -> None:
     )
 
     result = selector.select(
-        "The temperature is about three quarters of the allowed range. Run is required.",
+        "The measured temperature is 55 C. Run is required.",
         {
             "type": "object",
             "properties": {
@@ -157,17 +144,50 @@ def test_dynamic_number_and_boolean_share_one_forward() -> None:
     )
 
     assert model.calls == 1
-    assert model.last_batch_size == 9
+    assert model.last_batch_size == 6
     assert result.forward_calls == 1
-    assert result.batch_size == 9
+    assert result.batch_size == 6
     assert result.value["temperature"] == pytest.approx(55.0)
     assert result.value["run"] is True
-    assert result.fields[0].method == "label-swap-thresholds"
+    assert result.fields[0].method == "globally-calibrated-thresholds"
+    assert result.fields[0].details["calibration_log_odds"] == pytest.approx(bias)
     assert result.fields[1].method == "direct-choice"
 
 
-def test_large_integer_range_uses_fixed_task_budget() -> None:
-    model = FakeModel(threshold_rows([0.9, 0.8, 0.7, 0.6]))
+def test_one_calibration_row_is_shared_across_multiple_numeric_fields() -> None:
+    bias = 0.4
+    first = [0.9, 0.8, 0.7, 0.6]
+    second = [0.8, 0.7, 0.6, 0.5]
+    model = FakeModel(
+        [logit(p) + bias for p in first + second] + [bias]
+    )
+    selector = QwenSingleForwardSelector(
+        tokenizer=FakeTokenizer(),
+        model=model,
+        numeric_thresholds=4,
+    )
+
+    result = selector.select(
+        "Two numeric values.",
+        {
+            "type": "object",
+            "properties": {
+                "a": {"type": "number", "minimum": 0, "maximum": 100},
+                "b": {"type": "number", "minimum": -10, "maximum": 10},
+            },
+        },
+    )
+
+    assert model.calls == 1
+    assert result.batch_size == 9
+    assert result.value["a"] == pytest.approx(75.0)
+    assert result.value["b"] == pytest.approx(3.0)
+
+
+def test_large_integer_range_uses_fixed_task_budget_plus_one_calibration() -> None:
+    bias = 0.5
+    semantic = [0.9, 0.8, 0.7, 0.6]
+    model = FakeModel([logit(p) + bias for p in semantic] + [bias])
     selector = QwenSingleForwardSelector(
         tokenizer=FakeTokenizer(),
         model=model,
@@ -189,21 +209,8 @@ def test_large_integer_range_uses_fixed_task_budget() -> None:
     )
 
     assert model.calls == 1
-    assert result.batch_size == 8
+    assert result.batch_size == 5
     assert result.value["score"] == 37750
-
-
-def test_label_swap_cancels_symmetric_token_bias() -> None:
-    # A constant +1 token-bias logit in favor of B affects normal and swapped
-    # mappings in opposite semantic directions, so averaging semantic log-odds
-    # recovers the unbiased probability.
-    semantic_log_odds = 1.2
-    token_bias_b_minus_a = 1.0
-    normal = torch.sigmoid(torch.tensor(semantic_log_odds + token_bias_b_minus_a)).item()
-    swapped = torch.sigmoid(torch.tensor(semantic_log_odds - token_bias_b_minus_a)).item()
-    calibrated = _mean_log_odds_probability(normal, swapped)
-    expected = torch.sigmoid(torch.tensor(semantic_log_odds)).item()
-    assert calibrated == pytest.approx(expected, rel=1e-6)
 
 
 def test_isotonic_probability_repair() -> None:
@@ -213,7 +220,16 @@ def test_isotonic_probability_repair() -> None:
 
 
 def test_multitoken_enum_falls_back_to_surrogate_labels() -> None:
-    model = FakeModel([("enum", 0.5)])
+    class EnumModel(FakeModel):
+        def __call__(self, *, input_ids, attention_mask, use_cache, logits_to_keep):
+            self.calls += 1
+            logits = torch.full((input_ids.shape[0], 1, 128), -20.0)
+            logits[:, :, 12] = 0.0
+            logits[:, :, 13] = 1.0
+            logits[:, :, 14] = -1.0
+            return SimpleNamespace(logits=logits)
+
+    model = EnumModel([])
     selector = QwenSingleForwardSelector(
         tokenizer=FakeTokenizer(),
         model=model,
@@ -235,56 +251,3 @@ def test_multitoken_enum_falls_back_to_surrogate_labels() -> None:
     assert model.calls == 1
     assert result.fields[0].method == "surrogate-labels"
     assert result.value["action"] == "hide now"
-
-
-def test_numeric_literal_extraction_filters_range_and_grid() -> None:
-    from autoselect.schema import compile_schema
-
-    fields = compile_schema(
-        {
-            "type": "object",
-            "properties": {
-                "score": {
-                    "type": "integer",
-                    "minimum": 1000,
-                    "maximum": 50000,
-                }
-            },
-        }
-    )
-    field = fields[0]
-    literals = _numeric_literal_candidates(
-        "previous=30000, current=37750, ratio=0.5, invalid=60000",
-        field,
-        max_literals=5,
-    )
-    assert literals == [(30000, "30000"), (37750, "37750")]
-
-
-def test_literal_candidate_set_adds_three_anchors_without_duplicates() -> None:
-    from autoselect.schema import compile_schema
-
-    fields = compile_schema(
-        {
-            "type": "object",
-            "properties": {
-                "temperature": {
-                    "type": "number",
-                    "minimum": -20,
-                    "maximum": 80,
-                }
-            },
-        }
-    )
-    field = fields[0]
-    candidates = _literal_candidate_set(
-        field,
-        [(55.0, "55"), (40.0, "40")],
-    )
-    assert candidates == [
-        (55.0, "55", "literal"),
-        (40.0, "40", "literal"),
-        (-20, "-20", "anchor"),
-        (30, "30", "anchor"),
-        (80, "80", "anchor"),
-    ]

@@ -170,6 +170,39 @@ def test_large_integer_range_uses_fixed_threshold_batch_size() -> None:
     assert result.value["score"] == 37750
 
 
+def test_literal_only_request_does_not_load_qwen_runtime(monkeypatch) -> None:
+    def fail(*args, **kwargs):
+        raise AssertionError("Qwen runtime should not be loaded")
+
+    monkeypatch.setattr(
+        "autoselect.selector.AutoTokenizer.from_pretrained",
+        fail,
+    )
+    monkeypatch.setattr(
+        "autoselect.selector.AutoModelForCausalLM.from_pretrained",
+        fail,
+    )
+
+    selector = QwenSingleForwardSelector(numeric_thresholds=2)
+    result = selector.select(
+        "The measured temperature is exactly 55 degrees Celsius.",
+        {
+            "type": "object",
+            "properties": {
+                "temperature": {
+                    "type": "number",
+                    "minimum": -20,
+                    "maximum": 80,
+                }
+            },
+        },
+    )
+
+    assert result.forward_calls == 0
+    assert result.batch_size == 0
+    assert result.value["temperature"] == 55
+
+
 def test_unique_numeric_literal_skips_model_for_numeric_only_request() -> None:
     model = FakeModel([])
     selector = QwenSingleForwardSelector(

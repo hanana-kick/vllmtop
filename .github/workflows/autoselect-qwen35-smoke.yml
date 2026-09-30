@@ -1,4 +1,4 @@
-name: autoselect-global-calibration
+name: autoselect-global-calibration-positionids
 on:
   push:
     branches: [autoselect-qwen35-smoke-20260930]

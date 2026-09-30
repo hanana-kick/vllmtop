@@ -1,14 +1,10 @@
-name: autoselect-digit-regression-experiment
-
+name: autoselect-calibration-experiment
 on:
   push:
-    branches:
-      - autoselect-qwen35-smoke-20260930
-    paths:
-      - .github/workflows/autoselect-qwen35-smoke.yml
-
+    branches: [autoselect-qwen35-smoke-20260930]
+    paths: [.github/workflows/autoselect-qwen35-smoke.yml]
 jobs:
-  qwen35-cpu:
+  cpu:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -16,23 +12,18 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
-      TEST_REVISION: "7"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - run: uv venv .venv
-      - name: Install CPU inference stack
-        run: |
-          uv pip install --python .venv/bin/python             --index-strategy unsafe-best-match             --index-url https://download.pytorch.org/whl/cpu             --extra-index-url https://pypi.org/simple             'torch==2.14.0+cpu'
-          uv pip install --python .venv/bin/python             'transformers==5.17.0'             'huggingface_hub[hf_xet]>=1.0'             'accelerate>=1.0'             'safetensors>=0.7'
-      - name: Run digit regression experiment
-        run: |
-          .venv/bin/python digit_regression_experiment.py | tee digit-regression.log
+      - run: |
+          uv pip install --python .venv/bin/python --index-strategy unsafe-best-match --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch==2.14.0+cpu'
+          uv pip install --python .venv/bin/python 'transformers==5.17.0' 'huggingface_hub[hf_xet]>=1.0' 'accelerate>=1.0' 'safetensors>=0.7'
+      - run: .venv/bin/python calibration_experiment.py | tee calibration.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: digit-regression-evidence
+          name: calibration-evidence
           path: |
-            digit-regression-result.json
-            digit-regression.log
-          if-no-files-found: warn
+            calibration-result.json
+            calibration.log

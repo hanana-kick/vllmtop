@@ -16,7 +16,7 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
-      TEST_REVISION: "literal-candidate-1"
+      TEST_REVISION: "hybrid-selector-1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -27,15 +27,18 @@ jobs:
       - name: Install CPU inference stack
         run: |
           uv pip install --python .venv/bin/python             --index-strategy unsafe-best-match             --index-url https://download.pytorch.org/whl/cpu             --extra-index-url https://pypi.org/simple             'torch==2.14.0+cpu'
-          uv pip install --python .venv/bin/python             'transformers==5.17.0'             'huggingface_hub[hf_xet]>=1.0'             'accelerate>=1.0'             'safetensors>=0.7'
-      - name: Run numeric literal candidate experiment
+          uv pip install --python .venv/bin/python             'transformers==5.17.0'             'huggingface_hub[hf_xet]>=1.0'             'accelerate>=1.0'             'safetensors>=0.7'             'pytest>=8.4'
+      - name: Run hybrid selector unit tests
         run: |
-          .venv/bin/python _autoselect_test/literal_candidate_experiment.py 2>&1 | tee literal-candidate.log
+          PYTHONPATH=_autoselect_test/src .venv/bin/python -m pytest _autoselect_test/tests -q
+      - name: Run real Qwen hybrid selector integration
+        run: |
+          .venv/bin/python _autoselect_test/integration.py 2>&1 | tee hybrid-selector.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: autoselect-literal-candidate-evidence
+          name: autoselect-hybrid-selector-evidence
           path: |
-            literal-candidate-result.json
-            literal-candidate.log
+            hybrid-result.json
+            hybrid-selector.log
           if-no-files-found: warn

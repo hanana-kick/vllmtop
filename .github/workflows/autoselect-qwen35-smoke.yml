@@ -16,7 +16,7 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
-      TEST_REVISION: "teacher-forced-1"
+      TEST_REVISION: "literal-candidate-1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -28,14 +28,14 @@ jobs:
         run: |
           uv pip install --python .venv/bin/python             --index-strategy unsafe-best-match             --index-url https://download.pytorch.org/whl/cpu             --extra-index-url https://pypi.org/simple             'torch==2.14.0+cpu'
           uv pip install --python .venv/bin/python             'transformers==5.17.0'             'huggingface_hub[hf_xet]>=1.0'             'accelerate>=1.0'             'safetensors>=0.7'
-      - name: Run teacher-forced numeric candidate experiment
+      - name: Run numeric literal candidate experiment
         run: |
-          .venv/bin/python _autoselect_test/teacher_forced_experiment.py 2>&1 | tee teacher-forced.log
+          .venv/bin/python _autoselect_test/literal_candidate_experiment.py 2>&1 | tee literal-candidate.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: autoselect-teacher-forced-evidence
+          name: autoselect-literal-candidate-evidence
           path: |
-            teacher-forced-result.json
-            teacher-forced.log
+            literal-candidate-result.json
+            literal-candidate.log
           if-no-files-found: warn

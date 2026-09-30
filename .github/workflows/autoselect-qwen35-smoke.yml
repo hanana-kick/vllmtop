@@ -1,10 +1,14 @@
-name: autoselect-compact-prompt-experiment
+name: autoselect-qwen35-smoke
+
 on:
   push:
-    branches: [autoselect-qwen35-smoke-20260930]
-    paths: [.github/workflows/autoselect-qwen35-smoke.yml]
+    branches:
+      - autoselect-qwen35-smoke-20260930
+    paths:
+      - .github/workflows/autoselect-qwen35-smoke.yml
+
 jobs:
-  cpu:
+  direct-percent-benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -12,18 +16,33 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
+      TEST_REVISION: "direct-percent-1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
       - run: uv venv .venv
-      - run: |
-          uv pip install --python .venv/bin/python --index-strategy unsafe-best-match --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch==2.14.0+cpu'
-          uv pip install --python .venv/bin/python 'transformers==5.17.0' 'huggingface_hub[hf_xet]>=1.0' 'accelerate>=1.0' 'safetensors>=0.7'
-      - run: .venv/bin/python compact_prompt_experiment.py | tee compact-prompt.log
+      - name: Install CPU inference stack
+        run: |
+          uv pip install --python .venv/bin/python \
+            --index-strategy unsafe-best-match \
+            --index-url https://download.pytorch.org/whl/cpu \
+            --extra-index-url https://pypi.org/simple \
+            'torch==2.14.0+cpu'
+          uv pip install --python .venv/bin/python \
+            'transformers==5.17.0' \
+            'huggingface_hub[hf_xet]>=1.0' \
+            'accelerate>=1.0' \
+            'safetensors>=0.7'
+      - name: Benchmark direct normalized numeric tokens
+        run: |
+          .venv/bin/python _autoselect_test/direct_percent_benchmark.py 2>&1 | tee direct-percent.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: compact-prompt-evidence
+          name: direct-percent-benchmark
           path: |
-            compact-prompt-result.json
-            compact-prompt.log
+            direct-percent-benchmark.json
+            direct-percent.log
+          if-no-files-found: warn
